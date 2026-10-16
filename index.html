@@ -5,87 +5,53 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>AstraClash</title>
   <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      background-color: #000;
-      overflow: hidden;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      width: 100vw;
-      font-family: Consolas, monospace;
-      touch-action: none;
-      -webkit-touch-callout: none;
-      -webkit-user-select: none;
-      user-select: none;
-    }
-    #gameCanvas {
-      background-color: rgb(10, 10, 25);
-      image-rendering: pixelated;
-      cursor: pointer;
-    }
-    .touch-ui {
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; font-family: Consolas, monospace; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+    #gameCanvas { background-color: rgb(10, 10, 25); image-rendering: pixelated; cursor: pointer; }
+    .touch-ui { position: fixed; z-index: 99; pointer-events: auto; display: none; }
+    .d-pad { bottom: 20px; left: 20px; display: grid; grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(2, 50px); gap: 8px; }
+    .action-pad { bottom: 25px; right: 20px; display: flex; gap: 12px; }
+    .upgrade-pad { top: 70px; right: 20px; display: flex; gap: 10px; }
+    .t-btn { background: rgba(20, 30, 50, 0.75); border: 2px solid #00ffff; color: #fff; font-size: 16px; font-weight: bold; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .t-btn:active { background: rgba(0, 255, 255, 0.4); }
+    /* Real input so mobile OS keyboards can open (canvas key events do not) */
+    #mobileTextInput {
       position: fixed;
-      z-index: 99;
-      pointer-events: auto;
-      display: none;
-    }
-    .d-pad {
-      bottom: 20px;
-      left: 20px;
-      display: grid;
-      grid-template-columns: repeat(3, 50px);
-      grid-template-rows: repeat(2, 50px);
-      gap: 8px;
-    }
-    .action-pad {
-      bottom: 25px;
-      right: 20px;
-      display: flex;
-      gap: 12px;
-    }
-    .upgrade-pad {
-      top: 70px;
-      right: 20px;
-      display: flex;
-      gap: 10px;
-    }
-    .t-btn {
-      background: rgba(20, 30, 50, 0.75);
-      border: 2px solid #00ffff;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%);
+      width: min(90vw, 320px);
+      height: 44px;
+      z-index: 200;
+      font-size: 16px; /* prevents iOS zoom on focus */
+      font-family: Consolas, monospace;
+      text-align: center;
       color: #fff;
-      font-size: 16px;
-      font-weight: bold;
+      background: rgba(15, 18, 32, 0.95);
+      border: 2px solid #00ffff;
       border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      outline: none;
+      padding: 8px 12px;
+      display: none;
+      -webkit-user-select: text;
+      user-select: text;
+      touch-action: manipulation;
     }
-    .t-btn:active {
-      background: rgba(0, 255, 255, 0.4);
-    }
+    #mobileTextInput.visible { display: block; }
   </style>
 </head>
 <body>
   <canvas id="gameCanvas" width="1000" height="600"></canvas>
+  <input id="mobileTextInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" inputmode="text" />
 
   <div class="touch-ui d-pad" id="group-dpad">
-    <div></div>
-    <div class="t-btn" id="btn-up">▲</div>
-    <div></div>
-    <div class="t-btn" id="btn-left">◀</div>
-    <div></div>
-    <div class="t-btn" id="btn-right">▶</div>
+    <div></div><div class="t-btn" id="btn-up">▲</div><div></div>
+    <div class="t-btn" id="btn-left">◀</div><div></div><div class="t-btn" id="btn-right">▶</div>
   </div>
 
   <div class="touch-ui action-pad" id="group-action">
     <div class="t-btn" style="width: 65px; height: 65px; border-color: #ff3c3c;" id="btn-fire">FIRE</div>
-    <div class="t-btn" style="width: 55px; height: 55px;" id="btn-auto">AI (E)</div>
+    <div class="t-btn" style="width: 55px; height: 55px;" id="btn-ability">ABIL</div>
   </div>
 
   <div class="touch-ui upgrade-pad" id="group-upgrade">
@@ -96,6 +62,94 @@
 
   <script>
     const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || window.matchMedia("(pointer: coarse)").matches;
+    const mobileInput = document.getElementById("mobileTextInput");
+    let mobileField = null; // 'authName' | 'authPass' | 'roomCode' | 'roomPass'
+
+    function syncMobileFieldFromInput() {
+      if (!mobileInput || !mobileField) return;
+      let v = mobileInput.value || "";
+      if (mobileField === "authName") {
+        v = v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+        authNameInput = v;
+        if (mobileInput.value !== v) mobileInput.value = v;
+      } else if (mobileField === "authPass") {
+        v = v.slice(0, 12);
+        authPassInput = v;
+      } else if (mobileField === "roomCode") {
+        v = v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+        roomCodeInput = v;
+        if (mobileInput.value !== v) mobileInput.value = v;
+      } else if (mobileField === "roomPass") {
+        v = v.slice(0, 16);
+        passwordInput = v;
+      }
+    }
+
+    function openMobileKeyboard(field) {
+      if (!mobileInput) return;
+      mobileField = field;
+      let val = "";
+      let placeholder = "Type here";
+      let inputMode = "text";
+      let type = "text";
+      if (field === "authName") {
+        val = authNameInput;
+        placeholder = "CALLSIGN";
+        mobileInput.setAttribute("autocapitalize", "characters");
+        authActiveField = "name";
+      } else if (field === "authPass") {
+        val = authPassInput;
+        placeholder = "PASS-KEY";
+        type = "password";
+        authActiveField = "pass";
+      } else if (field === "roomCode") {
+        val = roomCodeInput;
+        placeholder = "4-LETTER CODE";
+        mobileInput.setAttribute("autocapitalize", "characters");
+        activeInput = "code";
+      } else if (field === "roomPass") {
+        val = passwordInput;
+        placeholder = "PASSWORD (optional)";
+        type = "text";
+        activeInput = "pass";
+      }
+      mobileInput.type = type === "password" ? "password" : "text";
+      mobileInput.placeholder = placeholder;
+      mobileInput.value = val;
+      mobileInput.classList.add("visible");
+      // Focus must run inside the user gesture for iOS
+      setTimeout(() => {
+        try {
+          mobileInput.focus({ preventScroll: true });
+          mobileInput.click();
+        } catch (e) {
+          try { mobileInput.focus(); } catch (e2) {}
+        }
+      }, 10);
+    }
+
+    function closeMobileKeyboard() {
+      if (!mobileInput) return;
+      syncMobileFieldFromInput();
+      mobileField = null;
+      mobileInput.blur();
+      mobileInput.classList.remove("visible");
+      mobileInput.value = "";
+    }
+
+    if (mobileInput) {
+      mobileInput.addEventListener("input", () => syncMobileFieldFromInput());
+      mobileInput.addEventListener("change", () => syncMobileFieldFromInput());
+      mobileInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          syncMobileFieldFromInput();
+          closeMobileKeyboard();
+        }
+      });
+      // Keep game vars live while typing
+      mobileInput.addEventListener("keyup", () => syncMobileFieldFromInput());
+    }
 
     function updateTouchUIVisibility() {
       const showTouch = isTouchDevice && !inLobby;
@@ -104,347 +158,226 @@
       document.getElementById("group-upgrade").style.display = showTouch ? "flex" : "none";
     }
 
-    const V_WIDTH = 1000;
-    const V_HEIGHT = 600;
-    const canvas = document.getElementById("gameCanvas");
-    const ctx = canvas.getContext("2d");
-
-    const virtualCanvas = document.createElement("canvas");
-    virtualCanvas.width = V_WIDTH;
-    virtualCanvas.height = V_HEIGHT;
+    const V_WIDTH = 1000; const V_HEIGHT = 600;
+    const canvas = document.getElementById("gameCanvas"); const ctx = canvas.getContext("2d");
+    const virtualCanvas = document.createElement("canvas"); virtualCanvas.width = V_WIDTH; virtualCanvas.height = V_HEIGHT;
     const vctx = virtualCanvas.getContext("2d");
 
-    let canvasScale = 1;
+    let canvasScale = 1; let screenShake = 0; const particles = []; const trails = [];
 
     function resizeWindow() {
-      const winW = window.innerWidth || 1000;
-      const winH = window.innerHeight || 600;
+      const winW = window.innerWidth || 1000; const winH = window.innerHeight || 600;
       canvasScale = Math.min(winW / V_WIDTH, winH / V_HEIGHT);
-      canvas.width = Math.floor(V_WIDTH * canvasScale);
-      canvas.height = Math.floor(V_HEIGHT * canvasScale);
+      canvas.width = Math.floor(V_WIDTH * canvasScale); canvas.height = Math.floor(V_HEIGHT * canvasScale);
     }
-    window.addEventListener("resize", resizeWindow);
-    resizeWindow();
+    window.addEventListener("resize", resizeWindow); resizeWindow();
 
     function getCanvasCoords(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
-      return {
-        x: (clientX - rect.left) / canvasScale,
-        y: (clientY - rect.top) / canvasScale
-      };
+      return { x: (clientX - rect.left) / canvasScale, y: (clientY - rect.top) / canvasScale };
     }
 
-    const RAINBOW = {
-      1: "rgb(255, 60, 60)",
-      2: "rgb(255, 140, 30)",
-      3: "rgb(255, 220, 50)",
-      4: "rgb(50, 255, 80)",
-      5: "rgb(30, 140, 255)",
-      6: "rgb(190, 70, 255)"
-    };
+    const RAINBOW = { 1: "rgb(255, 60, 60)", 2: "rgb(255, 140, 30)", 3: "rgb(255, 220, 50)", 4: "rgb(50, 255, 80)", 5: "rgb(30, 140, 255)", 6: "rgb(190, 70, 255)" };
+    const BLACK = "rgb(10, 10, 25)"; const WHITE = "rgb(255, 255, 255)"; const CYAN = "rgb(0, 255, 255)"; const GRAY = "rgb(140, 140, 150)";
+    const DARK_GRAY = "rgb(45, 50, 65)"; const XP_BG = "rgb(20, 30, 50)"; const XP_BLUE = "rgb(0, 180, 255)"; const ORE_GOLD = "rgb(255, 215, 0)";
+    const ASTEROID_COLOR = "rgb(115, 110, 125)"; const ORE_ASTEROID_COLOR = "rgb(70, 95, 130)"; const BOMB_ASTEROID_COLOR = "rgb(200, 50, 50)"; const ORE_BLUE = "rgb(0, 180, 255)";
+    const PANEL_BG = "rgb(15, 18, 32)"; const BORDER_COLOR = "rgb(0, 180, 255)";
 
-    const BLACK = "rgb(10, 10, 25)";
-    const WHITE = "rgb(255, 255, 255)";
-    const CYAN = "rgb(0, 255, 255)";
-    const GRAY = "rgb(140, 140, 150)";
-    const DARK_GRAY = "rgb(45, 50, 65)";
-    const XP_BG = "rgb(20, 30, 50)";
-    const XP_BLUE = "rgb(0, 180, 255)";
-    const ORE_BLUE = "rgb(0, 215, 255)";
-    const ASTEROID_COLOR = "rgb(115, 110, 125)";
-    const ORE_ASTEROID_COLOR = "rgb(70, 95, 130)";
-    const PANEL_BG = "rgb(15, 18, 32)";
-    const BORDER_COLOR = "rgb(0, 180, 255)";
-
-    const BASE_MOVE_SPEED = 5.0;
-    const BASE_ROT_SPEED = 4.0;
-    const WORLD_BOUND = 2000;
-    const ASTEROID_COUNT = 40; // Optimized from 85 to drastically reduce N^2 collision checks
-    const SHIP_SIZE = 20;
+    const BASE_MOVE_SPEED = 5.0; const BASE_ROT_SPEED = 4.0; const WORLD_BOUND = 2000; const ASTEROID_COUNT = 30; const SHIP_SIZE = 20;
 
     const UPGRADE_TREE = {
       root: { children: ["twin_cannons", "heavy_armor", "tractor_core"] },
-      twin_cannons: {
-        name: "Twin Cannons",
-        desc: "Fire 2 parallel lasers",
-        children: ["rapid_fire", "railgun"],
-        apply: (p) => { p.cannons = 2; }
-      },
-      rapid_fire: {
-        name: "Gatling Laser",
-        desc: "Twice the fire rate",
-        children: ["spread_burst", "homing_blasts"],
-        apply: (p) => { p.cooldown_max = 0.11; }
-      },
-      spread_burst: {
-        name: "Spread Burst",
-        desc: "Fires a 3-way laser shotgun spread",
-        children: ["rear_cannon", "heavy_slugs"],
-        apply: (p) => { p.spread_shot = true; }
-      },
-      heavy_slugs: {
-        name: "High-Caliber Slugs",
-        desc: "Shots deal heavy impact damage",
-        children: ["hyper_homing"],
-        apply: (p) => { p.shot_damage = 2; }
-      },
-      railgun: {
-        name: "Piercing Beam",
-        desc: "Lasers punch through asteroids",
-        children: ["prism_splitter", "heavy_slugs"],
-        apply: (p) => { p.piercing = true; }
-      },
-      rear_cannon: {
-        name: "Rear Defense",
-        desc: "Fires an extra laser backwards",
-        children: ["mine_layer"],
-        apply: (p) => { p.rear_cannon = true; }
-      },
-      prism_splitter: {
-        name: "Prism Splitter",
-        desc: "Lasers deal bonus damage",
-        children: ["super_prism"],
-        apply: (p) => { p.shot_damage = 2; }
-      },
-      homing_blasts: {
-        name: "Hunter Torpedoes",
-        desc: "Fires seeking missile torpedoes",
-        children: ["hyper_homing"],
-        apply: (p) => {
-          p.laser_speed = 13.0;
-          p.is_missile = true;
-        }
-      },
-      hyper_homing: {
-        name: "Predator Swarm",
-        desc: "Devastating double missile damage",
-        children: ["autopilot"],
-        apply: (p) => {
-          p.shot_damage = 3;
-          p.is_missile = true;
-          p.laser_speed = 15.0;
-        }
-      },
-      super_prism: {
-        name: "Refraction Field",
-        desc: "Split lasers pierce and shred",
-        children: ["autopilot"],
-        apply: (p) => { p.piercing = true; p.shot_damage = 3; }
-      },
-      heavy_armor: {
-        name: "Heavy Plating",
-        desc: "Max HP boosted to 12",
-        children: ["battering_ram", "afterburners"],
-        apply: (p) => { p.max_hp = 12; p.hp = 12; }
-      },
-      battering_ram: {
-        name: "Battering Ram",
-        desc: "Heavy shove on asteroid contact",
-        children: ["reactive_hull", "mine_layer"],
-        apply: (p) => { p.ram_power = 3.8; }
-      },
-      reactive_hull: {
-        name: "Reactive Armor",
-        desc: "Max HP boosted to 14",
-        children: ["reinforced_bulkheads"],
-        apply: (p) => { p.max_hp = 14; p.hp = 14; }
-      },
-      reinforced_bulkheads: {
-        name: "Reinforced Bulkheads",
-        desc: "Boosts hull durability to 18 HP",
-        children: ["barrier_blast"],
-        apply: (p) => { p.max_hp = 18; p.hp = 18; }
-      },
-      afterburners: {
-        name: "Afterburners",
-        desc: "Speed boosted by +40%",
-        children: ["ion_wake", "mine_layer"],
-        apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.4; }
-      },
-      ion_wake: {
-        name: "Ion Wake",
-        desc: "Further boosts engine speed by +20%",
-        children: ["plasma_overdrive"],
-        apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.6; }
-      },
-      mine_layer: {
-        name: "Cluster Mines",
-        desc: "Increases max HP and armor",
-        children: ["nuke_mines"],
-        apply: (p) => { p.max_hp += 2; p.hp += 2; }
-      },
-      barrier_blast: {
-        name: "Aegis Overload",
-        desc: "Titan hull upgraded to 22 HP",
-        children: ["autopilot"],
-        apply: (p) => { p.max_hp = 22; p.hp = 22; }
-      },
-      plasma_overdrive: {
-        name: "Plasma Tempest",
-        desc: "Speed boosted by +80%",
-        children: ["autopilot"],
-        apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.8; }
-      },
-      nuke_mines: {
-        name: "Seismic Core",
-        desc: "Max HP boosted by +6",
-        children: ["autopilot"],
-        apply: (p) => { p.max_hp += 6; p.hp += 6; }
-      },
-      tractor_core: {
-        name: "Tractor Core",
-        desc: "3x magnet range & faster collection",
-        children: ["ore_transmuter", "slingshot_tether"],
-        apply: (p) => { p.magnet_range = 350; p.orb_accel = 0.18; }
-      },
-      ore_transmuter: {
-        name: "Ore Transmuter",
-        desc: "+50% XP from all blue ores",
-        children: ["ore_siphon", "mine_layer"],
-        apply: (p) => { p.xp_mult = 1.5; }
-      },
-      ore_siphon: {
-        name: "Ore Siphon",
-        desc: "Ores yield +100% more Ore Mana",
-        children: ["auxiliary_battery"],
-        apply: (p) => { p.mana_mult = 2.0; }
-      },
-      auxiliary_battery: {
-        name: "Auxiliary Battery",
-        desc: "Increases max Ore Mana by +60",
-        children: ["singularity_core"],
-        apply: (p) => { p.max_mana = 160.0; p.mana += 60.0; }
-      },
-      slingshot_tether: {
-        name: "Slingshot Core",
-        desc: "Turning agility doubled",
-        children: ["gravity_repulsor"],
-        apply: (p) => { p.rot_speed = BASE_ROT_SPEED * 1.8; }
-      },
-      gravity_repulsor: {
-        name: "Gravity Repulsor",
-        desc: "+30% thrust speed",
-        children: ["singularity_core"],
-        apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.3; }
-      },
-      singularity_core: {
-        name: "Singularity Core",
-        desc: "Massive screen-wide magnet range",
-        children: ["autopilot"],
-        apply: (p) => { p.magnet_range = 800; p.orb_accel = 0.28; p.move_speed = BASE_MOVE_SPEED * 1.5; }
-      },
-      autopilot: {
-        name: "Autonomous AI Core",
-        desc: "Unlocks Ore Mana auto-aim and steering (E)",
-        children: [],
-        apply: (p) => { p.has_autopilot = true; p.autopilot_active = false; p.mana = Math.max(p.mana, 60.0); }
-      }
+      twin_cannons: { name: "Twin Cannons", desc: "Fire 2 parallel lasers", children: ["rapid_fire", "railgun"], apply: (p) => { p.cannons = 2; } },
+      rapid_fire: { name: "Gatling Laser", desc: "Hold to fire · twice the fire rate", children: ["spread_burst", "homing_blasts"], apply: (p) => { p.cooldown_max = 0.11; p.hold_fire = true; } },
+      spread_burst: { name: "Spread Burst", desc: "Fires a 3-way laser shotgun spread", children: ["rear_cannon", "heavy_slugs"], apply: (p) => { p.spread_shot = true; } },
+      heavy_slugs: { name: "High-Caliber Slugs", desc: "Shots deal heavy impact damage", children: ["hyper_homing"], apply: (p) => { p.shot_damage = 2; } },
+      railgun: { name: "Piercing Beam", desc: "Lasers punch through asteroids", children: ["prism_splitter", "heavy_slugs"], apply: (p) => { p.piercing = true; } },
+      rear_cannon: { name: "Rear Defense", desc: "Fires an extra laser backwards", children: ["upgraded_body"], apply: (p) => { p.rear_cannon = true; } },
+      prism_splitter: { name: "Prism Splitter", desc: "Lasers deal bonus damage", children: ["super_prism"], apply: (p) => { p.shot_damage = 2; } },
+      homing_blasts: { name: "Hunter Torpedoes", desc: "Fires seeking missile torpedoes (1 dmg)", children: ["hyper_homing"], apply: (p) => { p.laser_speed = 12.0; p.is_missile = true; p.shot_damage = 1; } },
+      hyper_homing: { name: "Predator Swarm", desc: "Faster missiles, still 1 dmg each", children: ["vampire_core", "boomerang_beams"], apply: (p) => { p.shot_damage = 1; p.is_missile = true; p.laser_speed = 14.0; p.cooldown_max = Math.min(p.cooldown_max, 0.14); } },
+      super_prism: { name: "Refraction Field", desc: "Split lasers pierce and shred", children: ["tachyon_lance", "targeting_optics"], apply: (p) => { p.piercing = true; p.shot_damage = 3; } },
+      heavy_armor: { name: "Heavy Plating", desc: "Max HP boosted to 12", children: ["battering_ram", "afterburners"], apply: (p) => { p.max_hp = 12; p.hp = 12; } },
+      battering_ram: { name: "Battering Ram", desc: "Heavy shove on asteroid contact", children: ["reactive_hull", "upgraded_body"], apply: (p) => { p.ram_power = 3.8; } },
+      reactive_hull: { name: "Reactive Armor", desc: "Max HP boosted to 14", children: ["reinforced_bulkheads"], apply: (p) => { p.max_hp = 14; p.hp = 14; } },
+      reinforced_bulkheads: { name: "Reinforced Bulkheads", desc: "Boosts hull durability to 18 HP", children: ["barrier_blast"], apply: (p) => { p.max_hp = 18; p.hp = 18; } },
+      afterburners: { name: "Afterburners", desc: "Speed boosted by +40%", children: ["ion_wake", "upgraded_body"], apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.4; } },
+      ion_wake: { name: "Ion Wake", desc: "Further boosts engine speed by +20%", children: ["plasma_overdrive"], apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.6; } },
+      upgraded_body: { name: "Upgraded Body", desc: "Increases max HP and armor", children: ["titan_body"], apply: (p) => { p.max_hp += 2; p.hp += 2; } },
+      barrier_blast: { name: "Aegis Overload", desc: "Titan hull upgraded to 22 HP", children: ["nanite_scavenger", "stasis_field"], apply: (p) => { p.max_hp = 22; p.hp = 22; } },
+      plasma_overdrive: { name: "Plasma Tempest", desc: "Speed boosted by +80%", children: ["phase_dash", "flak_shotgun"], apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.8; } },
+      titan_body: { name: "Titan Body", desc: "Max HP boosted by +6", children: ["proximity_mines", "stasis_field"], apply: (p) => { p.max_hp += 6; p.hp += 6; } },
+      tractor_core: { name: "Tractor Core", desc: "3x magnet range & faster collection", children: ["ore_transmuter", "slingshot_tether"], apply: (p) => { p.magnet_range = 350; p.orb_accel = 0.18; } },
+      ore_transmuter: { name: "Ore Transmuter", desc: "+50% XP from all blue ores", children: ["ore_siphon", "upgraded_body"], apply: (p) => { p.xp_mult = 1.5; } },
+      ore_siphon: { name: "Ore Siphon", desc: "Ores yield +100% more Ore Mana", children: ["auxiliary_battery"], apply: (p) => { p.mana_mult = 2.0; } },
+      auxiliary_battery: { name: "Auxiliary Battery", desc: "Increases max Ore Mana by +60", children: ["singularity_core"], apply: (p) => { p.max_mana = 160.0; p.mana += 60.0; } },
+      slingshot_tether: { name: "Slingshot Core", desc: "Turning agility doubled", children: ["gravity_repulsor"], apply: (p) => { p.rot_speed = BASE_ROT_SPEED * 1.8; } },
+      gravity_repulsor: { name: "Gravity Repulsor", desc: "+30% thrust speed", children: ["singularity_core"], apply: (p) => { p.move_speed = BASE_MOVE_SPEED * 1.3; } },
+      singularity_core: { name: "Singularity Core", desc: "Massive screen-wide magnet range", children: ["stasis_field", "phase_dash"], apply: (p) => { p.magnet_range = 800; p.orb_accel = 0.28; p.move_speed = BASE_MOVE_SPEED * 1.5; } },
+      nanite_scavenger: { name: "Nanite Scavenger", desc: "Collecting 5 Ores heals 1 HP", children: [], apply: (p) => { p.heal_on_ore = true; } },
+      vampire_core: { name: "Vampire Core", desc: "Hitting enemies siphons and heals HP", children: [], apply: (p) => { p.life_leech = true; } },
+      tachyon_lance: { name: "Tachyon Lance", desc: "Slow but massive piercing sniper shot", children: [], apply: (p) => { p.laser_speed = 35.0; p.shot_damage = 5; p.cooldown_max = 0.85; p.piercing = true; } },
+      targeting_optics: { name: "Targeting Optics", desc: "Enemy markers reveal live Health Bars", children: [], apply: (p) => { p.targeting_optics = true; } },
+      stasis_field: { name: "Stasis Forcefield", desc: "Press E to grow a field, E again to launch it", children: [], apply: (p) => { p.has_stasis_field = true; } },
+      phase_dash: { name: "Phase Dash", desc: "Press ABILITY (E) to warp using 40 Mana", children: [], apply: (p) => { p.can_dash = true; } },
+      proximity_mines: { name: "Proximity Mines", desc: "Automatically drop red explosive mines", children: [], apply: (p) => { p.drops_mines = true; } },
+      boomerang_beams: { name: "Boomerang Beams", desc: "Lasers stop and reverse direction back to you", children: [], apply: (p) => { p.boomerang = true; } },
+      flak_shotgun: { name: "Flak Shotgun", desc: "Massive spread of short-range shrapnel", children: [], apply: (p) => { p.flak_mode = true; p.cooldown_max = 0.6; p.shot_damage = 2; p.laser_speed = 18.0; } }
     };
 
-    const TIER_XP_THRESHOLDS = [0, 80, 180, 300, 440, 600];
+    const TIER_XP_THRESHOLDS = [0, 300, 800, 1600, 3000, 5000];
 
-    // Starfield reduced to 30 to lower per-frame draw overhead
     const stars = [];
-    for (let i = 0; i < 30; i++) {
-      stars.push({
-        x: Math.random() * V_WIDTH,
-        y: Math.random() * V_HEIGHT,
-        speed: 0.5 + Math.random() * 1.3
-      });
-    }
+    for (let i = 0; i < 40; i++) { stars.push({ x: Math.random() * V_WIDTH * 2, y: Math.random() * V_HEIGHT * 2, z: 0.1 + Math.random() * 0.5 }); }
 
-    function drawStarfield(targetCtx, w, h) {
-      for (let i = 0; i < stars.length; i++) {
-        const s = stars[i];
-        s.y = (s.y + s.speed * 0.3) % h;
-        s.x = (s.x + s.speed * 0.08) % w;
-        const val = Math.floor(Math.min(255, s.speed * 120));
-        targetCtx.fillStyle = `rgb(${val}, ${val}, ${val + 15})`;
-        targetCtx.fillRect(s.x, s.y, s.speed * 1.5, s.speed * 1.5);
+    function spawnParticles(x, y, color, count) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2; const speed = Math.random() * 4 + 1;
+        particles.push({ x: x, y: y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 1.0, color: color, size: 2 + Math.random() * 4 });
       }
     }
 
     function drawCard(targetCtx, x, y, w, h, borderCol = CYAN) {
-      targetCtx.fillStyle = PANEL_BG;
-      targetCtx.fillRect(x, y, w, h);
-      targetCtx.strokeStyle = borderCol;
-      targetCtx.lineWidth = 2;
-      targetCtx.strokeRect(x, y, w, h);
+      targetCtx.fillStyle = PANEL_BG; targetCtx.fillRect(x, y, w, h);
+      targetCtx.strokeStyle = borderCol; targetCtx.lineWidth = 2; targetCtx.strokeRect(x, y, w, h);
     }
 
     const RENDER_URL = "wss://astraclash-howt.onrender.com";
     let ws = null;
-    let menuMode = "main";
-    let statusMessage = "Connecting to matchmaking server...";
-    let statusColor = RAINBOW[3];
+    let isConnected = false;
+    let isConnecting = false;
+    let connectionError = false;
+    let connectStartTime = 0;
 
-    let roomCodeInput = "";
-    let passwordInput = "";
-    let activeInput = "code";
+    // ACCOUNT SYSTEM STORAGE
+    function getAccounts() {
+      try {
+        return JSON.parse(localStorage.getItem("astraclash_accounts")) || {};
+      } catch(e) { return {}; }
+    }
+    function saveAccounts(accs) {
+      localStorage.setItem("astraclash_accounts", JSON.stringify(accs));
+    }
 
-    let myId = 1;
-    let roomCode = "";
-    let inLobby = true;
+    let activePilot = JSON.parse(sessionStorage.getItem("astraclash_current_user") || "null");
+    let menuMode = "connecting"; 
+    let authTab = "register"; // 'register' or 'login'
+    let authNameInput = "";
+    let authPassInput = "";
+    let authActiveField = "name"; // 'name' or 'pass'
+    let authMessage = "";
+    
+    let statusMessage = "Establishing link to Render server...";
+    let statusColor = CYAN;
 
-    function setLobbyState(val) {
-      inLobby = val;
-      updateTouchUIVisibility();
+    let roomCodeInput = ""; let passwordInput = ""; let activeInput = "code";
+
+    let myId = 1; let roomCode = ""; let inLobby = true;
+
+    function setLobbyState(val) { 
+      inLobby = val; 
+      if (!val) {
+        menuMode = "in_game";
+        resetMatch();
+      }
+      updateTouchUIVisibility(); 
     }
 
     function connectWs() {
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return true;
       try {
+        isConnecting = true;
+        connectionError = false;
+        connectStartTime = performance.now();
         ws = new WebSocket(RENDER_URL);
-        statusMessage = "Connecting to Render...";
-        statusColor = RAINBOW[3];
-
-        ws.onopen = () => {
-          statusMessage = "Connected to Render. Choose game mode.";
+        statusMessage = "Connecting to Render server..."; statusColor = RAINBOW[3];
+        
+        ws.onopen = () => { 
+          isConnected = true;
+          isConnecting = false;
+          connectionError = false;
+          statusMessage = "Connected to Render."; 
           statusColor = RAINBOW[4];
+          if (menuMode === "connecting") {
+            menuMode = activePilot ? "main" : "account";
+          }
         };
 
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            handleNetworkMessage(msg);
-          } catch(e) {}
+        ws.onmessage = (event) => { 
+          try { 
+            const data = JSON.parse(event.data);
+            handleNetworkMessage(data); 
+          } catch(e) {} 
         };
-
-        ws.onerror = () => {
-          statusMessage = "Connection failed. Retrying...";
+        
+        ws.onerror = () => { 
+          isConnected = false;
+          isConnecting = false;
+          connectionError = true;
+          statusMessage = "Failed to connect to Render."; 
           statusColor = RAINBOW[1];
+          if (inLobby) menuMode = "connecting";
         };
 
-        ws.onclose = () => {
-          statusMessage = "Disconnected from server.";
+        ws.onclose = () => { 
+          isConnected = false;
+          isConnecting = false;
+          statusMessage = "Disconnected from server."; 
           statusColor = RAINBOW[1];
+          if (inLobby) {
+            menuMode = "connecting";
+            connectionError = true;
+          }
         };
         return true;
       } catch (err) {
-        statusMessage = "Error connecting to cloud.";
-        statusColor = RAINBOW[1];
+        isConnected = false;
+        isConnecting = false;
+        connectionError = true;
+        statusMessage = "Error contacting cloud service."; 
+        statusColor = RAINBOW[1]; 
         return false;
       }
     }
 
-    function sendMsg(payload) {
+    function sendMsg(payload) { 
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(payload));
+        try {
+          ws.send(JSON.stringify(payload)); 
+        } catch(e) {}
       }
     }
 
+    function recordAccountStat(stat, val) {
+      if (!activePilot) return;
+      const accs = getAccounts();
+      if (accs[activePilot.username]) {
+        accs[activePilot.username][stat] = (accs[activePilot.username][stat] || 0) + val;
+        saveAccounts(accs);
+        activePilot = accs[activePilot.username];
+        sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+      }
+    }
+
+    function takeDamage(dmg) {
+      if (!myShip || !myShip.alive || myShip.hp <= 0 || myShip.stasis_timer > 0) return; 
+      screenShake = Math.min((Number.isFinite(screenShake) ? screenShake : 0) + 5, 20); 
+      const amount = Number(dmg) || 1;
+      myShip.hp = Math.max(0, (Number.isFinite(myShip.hp) ? myShip.hp : 6) - amount);
+      if (myShip.hp <= 0) wipeShipOnDeath();
+    }
+
     function handleNetworkMessage(msg) {
-      const action = msg.action;
+      if (!msg) return;
+      const action = msg.action; 
       const status = msg.status;
 
-      if (action === "player_joined") {
-        setLobbyState(false);
-      }
+      if (action === "player_joined") setLobbyState(false);
 
       if (status === "ok") {
-        if (msg.player_id !== undefined) {
-          myId = Number(msg.player_id) || 1;
-          initMyShip();
+        if (msg.player_id !== undefined) { 
+          myId = Number(msg.player_id) || 1; 
+          initMyShip(); 
         }
         if (msg.room_code !== undefined) roomCode = msg.room_code;
 
@@ -452,671 +385,1363 @@
           const rooms = msg.rooms;
           if (rooms.length > 0) {
             sendMsg({ action: "join_room", room_code: rooms[0], password: null });
-            statusMessage = "Joining public arena...";
+            statusMessage = "Joining active arena..."; 
             setLobbyState(false);
           } else {
             sendMsg({ action: "create_room", public: true, password: null });
-            statusMessage = "Created public room. Waiting for pilots...";
+            statusMessage = "Room created. Waiting for opponent..."; 
             menuMode = "waiting";
           }
-        } else if (menuMode === "waiting") {
-          statusMessage = `Room [${roomCode}] open. Waiting for pilots (Max 6)...`;
         }
       } else if (status === "error") {
-        statusMessage = msg.msg || "Action failed.";
-        statusColor = RAINBOW[1];
+        statusMessage = msg.msg || "Action failed."; 
+        statusColor = RAINBOW[1]; 
         menuMode = "main";
       }
 
       if (action === "game_packet") {
-        setLobbyState(false);
-        const payload = msg.payload;
+        if (inLobby) setLobbyState(false);
+        const payload = msg.payload; 
         if (!payload) return;
+
+        // Host-authoritative match config / clock / end state
+        if (payload.match_config && myId !== 1) {
+          applyMatchConfig(payload.match_config);
+        }
+        if (payload.match_time !== undefined && myId !== 1) {
+          const t = Number(payload.match_time);
+          if (Number.isFinite(t)) matchTimeLeft = t;
+        }
+        if (payload.match_over && !matchOver) {
+          finishMatch(payload.match_reason || "Match complete.");
+        }
 
         if (payload.ship && payload.ship.id !== undefined) {
           const sId = Number(payload.ship.id);
           if (sId !== myId) {
             const s = payload.ship;
-            if (!isNaN(s.world_x) && !isNaN(s.world_y)) {
+            const wx = Number(s.world_x);
+            const wy = Number(s.world_y);
+            if (Number.isFinite(wx) && Number.isFinite(wy)) {
+              const incomingHp = Number.isFinite(Number(s.hp)) ? Number(s.hp) : 6;
+              const incomingAlive = s.alive !== undefined ? Boolean(s.alive) : true;
+              const incomingMax = Number.isFinite(Number(s.max_hp)) ? Number(s.max_hp) : 6;
+              const prev = remoteShips[sId];
+              // Trust authority HP, but if we optimistically lowered it and their packet is slightly stale,
+              // keep the lower value briefly unless they clearly healed/respawned.
+              let mergedHp = incomingHp;
+              if (prev && prev.alive && incomingAlive && Number.isFinite(prev.hp)) {
+                if (incomingHp < prev.hp) mergedHp = incomingHp; // confirmed damage
+                else if (incomingHp > prev.hp + 0.5) {
+                  // heal or respawn-related — accept
+                  mergedHp = incomingHp;
+                } else {
+                  // same-ish HP; keep local (may be optimistic)
+                  mergedHp = Math.min(prev.hp, incomingHp);
+                }
+              }
               remoteShips[sId] = {
-                id: sId,
-                world_x: Number(s.world_x),
-                world_y: Number(s.world_y),
-                angle: Number(s.angle) || 0,
-                hp: Number(s.hp) || 0,
-                max_hp: Number(s.max_hp) || 6,
-                alive: s.alive !== undefined ? Boolean(s.alive) : Number(s.hp) > 0
+                id: sId, 
+                world_x: wx, 
+                world_y: wy, 
+                angle: Number.isFinite(Number(s.angle)) ? Number(s.angle) : 0, 
+                hp: mergedHp, 
+                max_hp: incomingMax,
+                alive: incomingAlive, 
+                xp: Number.isFinite(Number(s.xp)) ? Number(s.xp) : 0, 
+                kills: Number.isFinite(Number(s.kills)) ? Number(s.kills) : (prev && prev.kills) || 0, 
+                stasis: Boolean(s.stasis), 
+                name: s.name || `PILOT ${sId}`
               };
             }
           }
         }
 
-        if (payload.hit_target !== undefined && Number(payload.hit_target) === myId) {
-          if (myShip && myShip.alive && myShip.hp > 0) {
-            const dmgAmt = Number(payload.dmg) || 1;
-            myShip.hp = Math.max(0, myShip.hp - dmgAmt);
-            if (myShip.hp <= 0) {
-              wipeShipOnDeath();
+        // Combat hits: apply to self immediately; others get optimistic HP update
+        const incomingHits = [];
+        if (Array.isArray(payload.hits)) {
+          for (const h of payload.hits) incomingHits.push(h);
+        } else if (payload.hit_target !== undefined) {
+          incomingHits.push({
+            target: payload.hit_target,
+            dmg: payload.dmg,
+            stasis: payload.stasis_time
+          });
+        }
+        for (const h of incomingHits) {
+          const tid = Number(h.target);
+          const dmg = Number(h.dmg) || 1;
+          const st = h.stasis ? Number(h.stasis) : 0;
+          if (tid === myId) {
+            takeDamage(dmg);
+            if (st > 0 && myShip && myShip.hp > 0) {
+              myShip.stasis_timer = st || 1.5;
+              myShip.is_charging_shield = false;
+            }
+          } else {
+            applyDamageToRemote(tid, dmg, st);
+          }
+        }
+
+        // Host applies damage reported by other players (their lasers may die before host simulates them)
+        if (myId === 1 && Array.isArray(payload.asteroid_hits)) {
+          for (const h of payload.asteroid_hits) {
+            const hid = Number(h.id);
+            const hdmg = Number(h.dmg) || 1;
+            if (!Number.isFinite(hid)) continue;
+            for (let ai = 0; ai < asteroids.length; ai++) {
+              const a = asteroids[ai];
+              if (Number(a.id) !== hid) continue;
+              a.hp -= hdmg;
+              if (a.hp <= 0) {
+                spawnParticles(a.x, a.y, a.is_bomb ? 'rgb(255, 50, 50)' : ASTEROID_COLOR, 15);
+                if (a.is_bomb) {
+                  screenShake = 15;
+                  for (const pid in remoteShips) {
+                    const rp = remoteShips[pid];
+                    if (rp && rp.alive && Math.hypot(rp.world_x - a.x, rp.world_y - a.y) < 200) queueHit(rp.id, 4);
+                  }
+                  if (myShip && myShip.alive && Math.hypot(myShip.world_x - a.x, myShip.world_y - a.y) < 200) takeDamage(4);
+                }
+                if (a.is_ore) spawnOreCluster(a.x, a.y, 4 + Math.floor(Math.random() * 4));
+                else if (Math.random() < 0.25) spawnOreCluster(a.x, a.y, 2 + Math.floor(Math.random() * 3));
+                Object.assign(a, createAsteroid(a.id));
+              }
+              worldSyncAccumulator = WORLD_SYNC_RATE; // push update ASAP
+              break;
             }
           }
         }
 
         if (myId !== 1) {
           if (Array.isArray(payload.asteroids) && payload.asteroids.length > 0) {
-            asteroids = payload.asteroids;
+            pruneRecentCollected();
+            asteroids = payload.asteroids.map(a => {
+              const id = a.id;
+              const maxHp = Number.isFinite(Number(a.max_hp)) ? Number(a.max_hp) : 4;
+              let hp = Number.isFinite(Number(a.hp)) ? Number(a.hp) : maxHp;
+              const rec = recentAsteroidHp.get(Number(id));
+              if (rec) {
+                // Host still lagging behind our damage — keep lower HP
+                if (hp > rec.hp && rec.hp > 0 && hp < maxHp) {
+                  hp = rec.hp;
+                } else {
+                  // Host caught up, or asteroid respawned at full HP — clear optimistic lock
+                  recentAsteroidHp.delete(Number(id));
+                }
+              }
+              return {
+                id: id,
+                x: Number.isFinite(Number(a.x)) ? Number(a.x) : 0,
+                y: Number.isFinite(Number(a.y)) ? Number(a.y) : 0,
+                vx: Number.isFinite(Number(a.vx)) ? Number(a.vx) : 0,
+                vy: Number.isFinite(Number(a.vy)) ? Number(a.vy) : 0,
+                r: Number.isFinite(Number(a.r)) ? Number(a.r) : 22,
+                hp: hp,
+                max_hp: maxHp,
+                is_ore: Boolean(a.is_ore),
+                is_bomb: Boolean(a.is_bomb)
+              };
+            });
           }
           if (Array.isArray(payload.ores)) {
-            ores = payload.ores;
+            pruneRecentCollected();
+            const localById = new Map();
+            for (const lo of ores) {
+              const lid = Number(lo.id);
+              if (Number.isFinite(lid)) localById.set(lid, lo);
+            }
+            const mapped = [];
+            let maxId = nextOreId - 1;
+            const magR = myShip ? (myShip.magnet_range || 160) : 160;
+            const magRSq = magR * magR;
+            for (const o of payload.ores) {
+              const id = Number(o.id);
+              const ox = Number.isFinite(Number(o.x)) ? Number(o.x) : 0;
+              const oy = Number.isFinite(Number(o.y)) ? Number(o.y) : 0;
+              if (Number.isFinite(id)) {
+                if (recentCollectedIds.has(id)) continue; // already picked up — never restore
+                maxId = Math.max(maxId, id);
+                let x = ox, y = oy;
+                const local = localById.get(id);
+                // Keep locally magnet-pulled positions so host snapshots don't snap orbs back mid-suck
+                if (local && myShip && myShip.alive) {
+                  const ldx = local.x - myShip.world_x;
+                  const ldy = local.y - myShip.world_y;
+                  if (ldx * ldx + ldy * ldy < magRSq) {
+                    x = local.x;
+                    y = local.y;
+                  }
+                }
+                mapped.push({ id, x, y, is_gold: Boolean(o.is_gold) });
+              } else {
+                mapped.push(makeOre(ox, oy, o.is_gold));
+              }
+            }
+            ores = mapped;
+            nextOreId = maxId + 1;
+          }
+        }
+
+        if (Array.isArray(payload.collected_ores) && payload.collected_ores.length) {
+          removeOresByIds(payload.collected_ores);
+          for (const id of payload.collected_ores) {
+            const n = Number(id);
+            if (Number.isFinite(n)) recentCollectedIds.set(n, performance.now());
           }
         }
 
         if (payload.new_lasers && Array.isArray(payload.new_lasers)) {
           for (const rL of payload.new_lasers) {
-            if (Number(rL.owner) !== myId && !isNaN(rL.x) && !isNaN(rL.y)) {
-              lasers.push(rL);
+            const lx = Number(rL.x);
+            const ly = Number(rL.y);
+            if (Number(rL.owner) !== myId && Number.isFinite(lx) && Number.isFinite(ly)) {
+              lasers.push({
+                x: lx, 
+                y: ly, 
+                angle: Number.isFinite(Number(rL.angle)) ? Number(rL.angle) : 0, 
+                owner: Number(rL.owner) || 1, 
+                dmg: Number.isFinite(Number(rL.dmg)) ? Number(rL.dmg) : 1, 
+                pierce: Boolean(rL.pierce),
+                speed: Number.isFinite(Number(rL.speed)) ? Number(rL.speed) : 14.0, 
+                is_missile: Boolean(rL.is_missile), 
+                is_mine: Boolean(rL.is_mine), 
+                boomerang: Boolean(rL.boomerang), 
+                life: Number.isFinite(Number(rL.life)) ? Number(rL.life) : undefined,
+                is_stasis: Boolean(rL.is_stasis), 
+                size: Number.isFinite(Number(rL.size)) ? Number(rL.size) : 15, 
+                stasis_time: Number.isFinite(Number(rL.stasis_time)) ? Number(rL.stasis_time) : 1.5
+              });
             }
           }
         }
-      } else if (action === "player_left") {
-        delete remoteShips[Number(msg.player_id)];
+      } else if (action === "player_left") { 
+        delete remoteShips[Number(msg.player_id)]; 
       }
     }
 
     connectWs();
 
-    let myShip = null;
-    const remoteShips = {};
-    let lasers = [];
-    let ores = [];
-    let asteroids = [];
+    let myShip = null; const remoteShips = {}; let lasers = []; let ores = []; let asteroids = [];
+    // Default public match settings (private host can override)
+    const MATCH_TIME_MAX_SEC = 20 * 60;
+    let matchConfig = {
+      mode: "ffa",       // ffa | teams_3v3 | teams_2v2v2
+      useTimer: true,
+      useKills: true,
+      durationSec: 8 * 60,
+      killLimit: 10      // 0 = unlimited
+    };
+    let matchTimeLeft = matchConfig.durationSec;
+    let matchOver = false;
+    let matchResults = null;
+    let matchWinnerName = "";
 
-    let netAccumulator = 0;
-    const NET_TICK_RATE = 0.05; // 20 Hz
-    let worldSyncAccumulator = 0;
-    const WORLD_SYNC_RATE = 0.5; // Host syncs world objects at 2Hz
-    let oreRegenAccumulator = 0;
-    const ORE_REGEN_INTERVAL = 4.0;
-    const MAX_WORLD_ORES = 50;
+    const TEAM_COLORS = {
+      0: "rgb(50, 180, 255)",
+      1: "rgb(255, 80, 80)",
+      2: "rgb(80, 255, 120)"
+    };
+    const TEAM_NAMES = { 0: "ALPHA", 1: "BRAVO", 2: "CHARLIE" };
 
+    function getTeam(playerId) {
+      const id = Number(playerId) || 1;
+      if (matchConfig.mode === "teams_3v3") return id <= 3 ? 0 : 1;
+      if (matchConfig.mode === "teams_2v2v2") return Math.floor((id - 1) / 2);
+      return -1; // FFA — no team
+    }
+
+    function sameTeam(a, b) {
+      if (matchConfig.mode === "ffa") return Number(a) === Number(b);
+      return getTeam(a) === getTeam(b);
+    }
+
+    function isTeamMode() {
+      return matchConfig.mode === "teams_3v3" || matchConfig.mode === "teams_2v2v2";
+    }
+
+    function clampMatchConfig(cfg) {
+      const c = Object.assign({}, matchConfig, cfg || {});
+      c.mode = ["ffa", "teams_3v3", "teams_2v2v2"].includes(c.mode) ? c.mode : "ffa";
+      c.useTimer = Boolean(c.useTimer);
+      c.useKills = Boolean(c.useKills);
+      if (!c.useTimer && !c.useKills) c.useTimer = true; // must end somehow
+      c.durationSec = Math.max(60, Math.min(MATCH_TIME_MAX_SEC, Number(c.durationSec) || 480));
+      let kl = Number(c.killLimit);
+      if (!Number.isFinite(kl) || kl < 0) kl = 0;
+      c.killLimit = Math.floor(kl); // 0 = unlimited
+      return c;
+    }
+
+    function applyMatchConfig(cfg) {
+      matchConfig = clampMatchConfig(cfg);
+      matchTimeLeft = matchConfig.useTimer ? matchConfig.durationSec : 999999;
+    }
+
+    function resetMatch() {
+      matchConfig = clampMatchConfig(matchConfig);
+      matchTimeLeft = matchConfig.useTimer ? matchConfig.durationSec : 999999;
+      matchOver = false;
+      matchResults = null;
+      matchWinnerName = "";
+      if (myShip) myShip.kills = 0;
+      for (const pid in remoteShips) {
+        if (remoteShips[pid]) remoteShips[pid].kills = 0;
+      }
+    }
+
+    function getMatchStandings() {
+      if (isTeamMode()) {
+        const teams = {};
+        const add = (id, name, kills) => {
+          const t = getTeam(id);
+          if (!teams[t]) teams[t] = { team: t, name: TEAM_NAMES[t] || `TEAM ${t}`, kills: 0, members: [] };
+          teams[t].kills += kills || 0;
+          teams[t].members.push({ name, kills: kills || 0, id });
+        };
+        add(myId, (myShip && myShip.name) || "YOU", (myShip && myShip.kills) || 0);
+        for (const pid in remoteShips) {
+          const p = remoteShips[pid];
+          if (!p) continue;
+          add(Number(pid), p.name || `PILOT ${pid}`, p.kills || 0);
+        }
+        return Object.values(teams).sort((a, b) => b.kills - a.kills);
+      }
+      const list = [{ name: (myShip && myShip.name) || "YOU", kills: (myShip && myShip.kills) || 0, id: myId }];
+      for (const pid in remoteShips) {
+        const p = remoteShips[pid];
+        if (!p) continue;
+        list.push({ name: p.name || `PILOT ${pid}`, kills: p.kills || 0, id: Number(pid) });
+      }
+      list.sort((a, b) => b.kills - a.kills || a.name.localeCompare(b.name));
+      return list;
+    }
+
+    function finishMatch(reason) {
+      if (matchOver) return;
+      matchOver = true;
+      matchResults = getMatchStandings();
+      if (isTeamMode()) {
+        matchWinnerName = matchResults.length ? (matchResults[0].name + " TEAM") : "NOBODY";
+      } else {
+        matchWinnerName = matchResults.length ? matchResults[0].name : "NOBODY";
+      }
+      if (myShip) {
+        myShip.vx = 0;
+        myShip.vy = 0;
+        myShip.is_charging_shield = false;
+        myShip.shield_charge = 0;
+      }
+      statusMessage = reason || "Match complete.";
+      statusColor = CYAN;
+    }
+
+    function returnToLobbyFromMatch() {
+      matchOver = false;
+      matchResults = null;
+      lasers = [];
+      // leave room visually — back to main menu; reconnect flow stays up
+      setLobbyState(true);
+      menuMode = "main";
+      statusMessage = "Returned to hangar.";
+      statusColor = CYAN;
+      updateTouchUIVisibility();
+    }
+
+    let netAccumulator = 0; const NET_TICK_RATE = 0.025; // 40 Hz for snappier HP / combat sync
+    let worldSyncAccumulator = 0; const WORLD_SYNC_RATE = 0.2;
+    let oreRegenAccumulator = 0; const ORE_REGEN_INTERVAL = 4.0; const MAX_WORLD_ORES = 40;
     let outgoingLaserQueue = [];
-    let pendingHitTarget = null;
-    let pendingHitDmg = 0;
+    let pendingHits = []; // { target, dmg, stasis }
+    let nextOreId = 1;
+    let outgoingCollectedOres = [];
+    let outgoingAsteroidHits = []; // { id, dmg } — non-host reports damage to host
+    const recentCollectedIds = new Map(); // id -> timestamp
+    const recentAsteroidHp = new Map(); // id -> { hp, t } optimistic floor
+
+    function pruneRecentCollected() {
+      const now = performance.now();
+      for (const [id, t] of recentCollectedIds) {
+        if (now - t > 5000) recentCollectedIds.delete(id);
+      }
+      for (const [id, rec] of recentAsteroidHp) {
+        if (now - rec.t > 2000) recentAsteroidHp.delete(id);
+      }
+    }
+
+    function removeOresByIds(ids) {
+      if (!ids || !ids.length) return;
+      const idSet = new Set(ids.map(Number).filter(Number.isFinite));
+      if (!idSet.size) return;
+      for (let i = ores.length - 1; i >= 0; i--) {
+        if (idSet.has(Number(ores[i].id))) ores.splice(i, 1);
+      }
+    }
+
+    function makeOre(x, y, is_gold) {
+      const id = nextOreId++;
+      return {
+        id,
+        x: Math.max(-WORLD_BOUND + 40, Math.min(WORLD_BOUND - 40, x)),
+        y: Math.max(-WORLD_BOUND + 40, Math.min(WORLD_BOUND - 40, y)),
+        is_gold: Boolean(is_gold)
+      };
+    }
+
+    function applyDamageToRemote(targetId, dmg, stasisTime, creditKill) {
+      const id = Number(targetId);
+      const rp = remoteShips[id];
+      if (!rp) return;
+      const amount = Number(dmg) || 1;
+      const wasAlive = rp.alive !== false && (Number.isFinite(rp.hp) ? rp.hp : 6) > 0;
+      rp.hp = Math.max(0, (Number.isFinite(rp.hp) ? rp.hp : 6) - amount);
+      if (rp.hp <= 0) {
+        rp.alive = false;
+        rp.hp = 0;
+        if (creditKill && wasAlive && myShip) {
+          myShip.kills = (myShip.kills || 0) + 1;
+          recordAccountStat("kills", 1);
+        }
+      }
+      if (stasisTime) rp.stasis = true;
+    }
+
+    function queueHit(targetId, dmg, stasisTime) {
+      const id = Number(targetId);
+      if (!Number.isFinite(id) || id === myId) return;
+      if (sameTeam(myId, id)) return; // friendly fire off in team modes
+      const amount = Number(dmg) || 1;
+      const st = stasisTime ? Number(stasisTime) : 0;
+      pendingHits.push({ target: id, dmg: amount, stasis: st > 0 ? st : undefined });
+      applyDamageToRemote(id, amount, st > 0 ? st : 0, true);
+    }
 
     function initMyShip() {
-      const angleOffset = (myId - 1) * (360.0 / 6);
+      const safeId = Number(myId) || 1;
+      const angleOffset = (safeId - 1) * 60;
       const spawnRad = (angleOffset * Math.PI) / 180;
+      
+      const startX = Number((400.0 * Math.cos(spawnRad)).toFixed(2));
+      const startY = Number((400.0 * Math.sin(spawnRad)).toFixed(2));
+
+      const pilotName = activePilot ? activePilot.username : `PILOT ${safeId}`;
+
       myShip = {
-        id: myId,
-        world_x: Number((400.0 * Math.cos(spawnRad)).toFixed(2)),
-        world_y: Number((400.0 * Math.sin(spawnRad)).toFixed(2)),
-        vx: 0.0,
-        vy: 0.0,
-        angle: (angleOffset + 180.0) % 360.0,
-        color: RAINBOW[myId] || RAINBOW[1],
-        hp: 6,
-        max_hp: 6,
-        alive: true,
-        respawn_timer: 0,
-        xp: 0,
-        tier: 0,
+        id: safeId, 
+        world_x: Number.isFinite(startX) ? startX : 0, 
+        world_y: Number.isFinite(startY) ? startY : 0,
+        vx: 0.0, 
+        vy: 0.0, 
+        angle: (angleOffset + 180.0) % 360.0, 
+        color: RAINBOW[safeId] || RAINBOW[1],
+        hp: 6, 
+        max_hp: 6, 
+        alive: true, 
+        respawn_timer: 0, 
+        xp: 0, 
+        kills: 0, 
+        tier: 0, 
         current_node: "root",
-        mana: 25.0,
-        max_mana: 100.0,
-        mana_mult: 1.0,
-        xp_mult: 1.0,
-        has_autopilot: false,
-        autopilot_active: false,
-        move_speed: BASE_MOVE_SPEED,
+        mana: 25.0, 
+        max_mana: 100.0, 
+        mana_mult: 1.0, 
+        xp_mult: 1.0, 
+        move_speed: BASE_MOVE_SPEED, 
         rot_speed: BASE_ROT_SPEED,
-        cannons: 1,
-        cooldown_max: 0.20,
-        spread_shot: false,
-        rear_cannon: false,
-        shot_damage: 1,
-        piercing: false,
-        laser_speed: 14.0,
+        cannons: 1, 
+        hold_fire: false, 
+        cooldown_max: 0.20, 
+        spread_shot: false, 
+        rear_cannon: false, 
+        shot_damage: 1, 
+        piercing: false, 
+        laser_speed: 14.0, 
         is_missile: false,
-        magnet_range: 160,
-        orb_accel: 0.09,
-        ram_power: 1.0,
-        cooldown: 0.0
+        magnet_range: 160, 
+        orb_accel: 0.09, 
+        ram_power: 1.0, 
+        cooldown: 0.0, 
+        name: pilotName,
+        heal_on_ore: false, 
+        ore_counter: 0, 
+        life_leech: false, 
+        can_dash: false, 
+        dash_cooldown: 0.0, 
+        drops_mines: false, 
+        mine_timer: 0.0,
+        boomerang: false, 
+        flak_mode: false, 
+        targeting_optics: false,
+        has_stasis_field: false, 
+        is_charging_shield: false, 
+        shield_charge: 0, 
+        stasis_timer: 0
       };
     }
     initMyShip();
 
     function wipeShipOnDeath() {
-      myShip.hp = 0;
-      myShip.alive = false;
+      if (!myShip) return;
+      spawnParticles(myShip.world_x, myShip.world_y, myShip.color, 40); 
+      screenShake = 20;
+      myShip.hp = 0; 
+      myShip.alive = false; 
       myShip.respawn_timer = 10.0;
-      myShip.autopilot_active = false;
-
-      // Wipe levels, tier progression, pending upgrade choices, and reset stats
-      myShip.xp = 0;
-      myShip.tier = 0;
-      myShip.current_node = "root";
-      myShip.max_hp = 6;
-      myShip.mana = 0;
+      myShip.xp = 0; 
+      myShip.tier = 0; 
+      myShip.current_node = "root"; 
+      myShip.max_hp = 6; 
+      myShip.mana = 0; 
       myShip.max_mana = 100.0;
-      myShip.mana_mult = 1.0;
-      myShip.xp_mult = 1.0;
-      myShip.has_autopilot = false;
-      myShip.move_speed = BASE_MOVE_SPEED;
+      myShip.mana_mult = 1.0; 
+      myShip.xp_mult = 1.0; 
+      myShip.move_speed = BASE_MOVE_SPEED; 
       myShip.rot_speed = BASE_ROT_SPEED;
-      myShip.cannons = 1;
-      myShip.cooldown_max = 0.20;
-      myShip.spread_shot = false;
-      myShip.rear_cannon = false;
+      myShip.cannons = 1; 
+      myShip.hold_fire = false; 
+      myShip.cooldown_max = 0.20; 
+      myShip.spread_shot = false; 
+      myShip.rear_cannon = false; 
       myShip.shot_damage = 1;
-      myShip.piercing = false;
-      myShip.laser_speed = 14.0;
-      myShip.is_missile = false;
-      myShip.magnet_range = 160;
-      myShip.orb_accel = 0.09;
+      myShip.piercing = false; 
+      myShip.laser_speed = 14.0; 
+      myShip.is_missile = false; 
+      myShip.magnet_range = 160; 
+      myShip.orb_accel = 0.09; 
       myShip.ram_power = 1.0;
+      myShip.heal_on_ore = false; 
+      myShip.ore_counter = 0; 
+      myShip.life_leech = false; 
+      myShip.can_dash = false; 
+      myShip.dash_cooldown = 0; 
+      myShip.drops_mines = false; 
+      myShip.mine_timer = 0;
+      myShip.boomerang = false; 
+      myShip.flak_mode = false; 
+      myShip.targeting_optics = false;
+      myShip.has_stasis_field = false; 
+      myShip.is_charging_shield = false; 
+      myShip.shield_charge = 0; 
+      myShip.stasis_timer = 0;
     }
 
     function createAsteroid(idx) {
-      const is_ore = Math.random() < 0.25;
+      const is_ore = Math.random() < 0.25; 
+      const is_bomb = !is_ore && Math.random() < 0.1; 
       return {
-        id: idx,
-        x: -WORLD_BOUND + 150 + Math.random() * (WORLD_BOUND * 2 - 300),
+        id: idx, 
+        x: -WORLD_BOUND + 150 + Math.random() * (WORLD_BOUND * 2 - 300), 
         y: -WORLD_BOUND + 150 + Math.random() * (WORLD_BOUND * 2 - 300),
-        vx: -0.8 + Math.random() * 1.6,
-        vy: -0.8 + Math.random() * 1.6,
+        vx: -0.8 + Math.random() * 1.6, 
+        vy: -0.8 + Math.random() * 1.6, 
         r: is_ore ? 26 + Math.floor(Math.random() * 22) : 22 + Math.floor(Math.random() * 22),
-        hp: is_ore ? 6 : 4,
-        max_hp: is_ore ? 6 : 4,
-        is_ore: is_ore
+        hp: is_ore ? 6 : (is_bomb ? 3 : 4), 
+        max_hp: is_ore ? 6 : (is_bomb ? 3 : 4), 
+        is_ore: is_ore, 
+        is_bomb: is_bomb
       };
     }
 
-    function initAsteroids() {
-      asteroids = [];
-      for (let i = 0; i < ASTEROID_COUNT; i++) {
-        asteroids.push(createAsteroid(i));
-      }
+    function initAsteroids() { 
+      asteroids = []; 
+      for (let i = 0; i < ASTEROID_COUNT; i++) asteroids.push(createAsteroid(i)); 
     }
     initAsteroids();
 
     function spawnOreCluster(x, y, count) {
       for (let i = 0; i < count; i++) {
-        ores.push({
-          x: Math.max(-WORLD_BOUND + 40, Math.min(WORLD_BOUND - 40, x + (-16 + Math.random() * 32))),
-          y: Math.max(-WORLD_BOUND + 40, Math.min(WORLD_BOUND - 40, y + (-16 + Math.random() * 32)))
-        });
+        ores.push(makeOre(x + (-16 + Math.random() * 32), y + (-16 + Math.random() * 32), Math.random() < 0.05));
       }
     }
-
-    for (let i = 0; i < 25; i++) {
-      ores.push({
-        x: -WORLD_BOUND * 0.7 + Math.random() * (WORLD_BOUND * 1.4),
-        y: -WORLD_BOUND * 0.7 + Math.random() * (WORLD_BOUND * 1.4)
-      });
+    for (let i = 0; i < 20; i++) { 
+      ores.push(makeOre(-WORLD_BOUND * 0.7 + Math.random() * (WORLD_BOUND * 1.4), -WORLD_BOUND * 0.7 + Math.random() * (WORLD_BOUND * 1.4), Math.random() < 0.05)); 
     }
 
-    const keysDown = {};
-    let mousePos = { x: 0, y: 0 };
-
-    window.addEventListener("mousemove", (e) => {
-      mousePos = getCanvasCoords(e.clientX, e.clientY);
-    });
+    const keysDown = {}; let mousePos = { x: 0, y: 0 }; let fireKeyWasDown = false; let eKeyWasDown = false;
+    window.addEventListener("mousemove", (e) => { mousePos = getCanvasCoords(e.clientX, e.clientY); });
 
     function handleMenuClick(pos) {
       if (!inLobby) return;
       const cx = V_WIDTH / 2;
 
-      if (menuMode === "main") {
-        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 190 && pos.y <= 238) {
+      if (menuMode === "connecting") {
+        if (connectionError && pos.x >= cx - 110 && pos.x <= cx + 110 && pos.y >= 400 && pos.y <= 448) {
           connectWs();
-          sendMsg({ action: "list_public" });
-          statusMessage = "Searching public games...";
+        }
+      } else if (menuMode === "account") {
+        // Tab buttons
+        if (pos.y >= 140 && pos.y <= 175) {
+          if (pos.x >= cx - 150 && pos.x <= cx - 10) { authTab = "register"; authMessage = ""; }
+          if (pos.x >= cx + 10 && pos.x <= cx + 150) { authTab = "login"; authMessage = ""; }
+        }
+        // Input selector
+        if (pos.x >= cx - 140 && pos.x <= cx + 140) {
+          if (pos.y >= 210 && pos.y <= 248) {
+            authActiveField = "name";
+            openMobileKeyboard("authName");
+          }
+          if (pos.y >= 270 && pos.y <= 308) {
+            authActiveField = "pass";
+            openMobileKeyboard("authPass");
+          }
+        }
+        // Action Button
+        if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 335 && pos.y <= 380) {
+          closeMobileKeyboard();
+          const accs = getAccounts();
+          const u = authNameInput.trim().toUpperCase();
+          const p = authPassInput.trim();
+
+          if (u.length < 2) {
+            authMessage = "CALLSIGN MUST BE 2+ CHARS";
+            return;
+          }
+
+          if (authTab === "register") {
+            // Callsigns are not unique — upsert local profile (keep career stats if name already exists)
+            const prev = accs[u] || {};
+            accs[u] = {
+              username: u,
+              pass: p,
+              career_xp: prev.career_xp || 0,
+              kills: prev.kills || 0,
+              asteroids: prev.asteroids || 0,
+              highest_tier: prev.highest_tier || 0
+            };
+            saveAccounts(accs);
+            activePilot = accs[u];
+            sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+            initMyShip();
+            menuMode = "main";
+            statusMessage = prev.username
+              ? `Welcome back, Commander ${u}.`
+              : `Welcome to AstraClash, Commander ${u}.`;
+          } else {
+            if (!accs[u]) {
+              authMessage = "PILOT NOT FOUND";
+            } else if (accs[u].pass !== p) {
+              authMessage = "INCORRECT PASS-KEY";
+            } else {
+              activePilot = accs[u];
+              sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+              initMyShip();
+              menuMode = "main";
+              statusMessage = `Welcome back, Commander ${u}.`;
+            }
+          }
+        }
+      } else if (menuMode === "main") {
+        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 190 && pos.y <= 238) {
+          if (!isConnected) connectWs();
+          applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
+          sendMsg({ action: "list_public" }); 
+          statusMessage = "Searching active public games..."; 
           statusColor = RAINBOW[3];
         } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 260 && pos.y <= 308) {
-          menuMode = "host_private";
-          passwordInput = "";
-          activeInput = "pass";
+          menuMode = "host_private"; passwordInput = ""; activeInput = "pass";
+          openMobileKeyboard("roomPass");
         } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 330 && pos.y <= 378) {
-          menuMode = "join_private";
-          roomCodeInput = "";
-          passwordInput = "";
-          activeInput = "code";
+          menuMode = "join_private"; roomCodeInput = ""; passwordInput = ""; activeInput = "code";
+          openMobileKeyboard("roomCode");
+        } else if (pos.x >= cx - 60 && pos.x <= cx + 60 && pos.y >= 385 && pos.y <= 415) {
+          sessionStorage.removeItem("astraclash_current_user");
+          activePilot = null;
+          authNameInput = "";
+          authPassInput = "";
+          menuMode = "account";
+          statusMessage = "Awaiting pilot identification...";
+          openMobileKeyboard("authName");
         }
       } else if (menuMode === "host_private") {
-        if (pos.x >= cx - 140 && pos.x <= cx - 10 && pos.y >= 340 && pos.y <= 382) {
-          connectWs();
-          sendMsg({ action: "create_room", public: false, password: passwordInput || null });
-          menuMode = "waiting";
+        // Mode select
+        if (pos.y >= 175 && pos.y <= 205) {
+          if (pos.x >= cx - 200 && pos.x <= cx - 70) matchConfig.mode = "ffa";
+          else if (pos.x >= cx - 60 && pos.x <= cx + 60) matchConfig.mode = "teams_3v3";
+          else if (pos.x >= cx + 70 && pos.x <= cx + 200) matchConfig.mode = "teams_2v2v2";
+          matchConfig = clampMatchConfig(matchConfig);
+        }
+        // Timer toggle
+        if (pos.x >= cx - 200 && pos.x <= cx - 40 && pos.y >= 220 && pos.y <= 248) {
+          matchConfig.useTimer = !matchConfig.useTimer;
+          matchConfig = clampMatchConfig(matchConfig);
+        }
+        // Timer - / +
+        if (matchConfig.useTimer) {
+          if (pos.x >= cx + 50 && pos.x <= cx + 90 && pos.y >= 220 && pos.y <= 248) {
+            matchConfig.durationSec = Math.max(60, matchConfig.durationSec - 60);
+          }
+          if (pos.x >= cx + 150 && pos.x <= cx + 190 && pos.y >= 220 && pos.y <= 248) {
+            matchConfig.durationSec = Math.min(MATCH_TIME_MAX_SEC, matchConfig.durationSec + 60);
+          }
+        }
+        // Kills toggle
+        if (pos.x >= cx - 200 && pos.x <= cx - 40 && pos.y >= 260 && pos.y <= 288) {
+          matchConfig.useKills = !matchConfig.useKills;
+          matchConfig = clampMatchConfig(matchConfig);
+        }
+        // Kills - / + (0 = unlimited)
+        if (matchConfig.useKills) {
+          if (pos.x >= cx + 50 && pos.x <= cx + 90 && pos.y >= 260 && pos.y <= 288) {
+            matchConfig.killLimit = Math.max(0, matchConfig.killLimit - 1);
+          }
+          if (pos.x >= cx + 150 && pos.x <= cx + 190 && pos.y >= 260 && pos.y <= 288) {
+            matchConfig.killLimit = Math.min(999, matchConfig.killLimit + 1);
+          }
+        }
+        // Password field
+        if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 310 && pos.y <= 346) {
+          activeInput = "pass";
+          openMobileKeyboard("roomPass");
+        } else if (pos.x >= cx - 140 && pos.x <= cx - 10 && pos.y >= 365 && pos.y <= 407) {
+          closeMobileKeyboard();
+          matchConfig = clampMatchConfig(matchConfig);
+          if (!isConnected) connectWs();
+          sendMsg({ action: "create_room", public: false, password: passwordInput || null }); 
+          menuMode = "waiting"; 
           statusMessage = "Creating private arena...";
-        } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 340 && pos.y <= 382) {
-          menuMode = "main";
+        } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) { 
+          closeMobileKeyboard();
+          menuMode = "main"; 
         }
       } else if (menuMode === "join_private") {
         if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 245 && pos.y <= 279) {
           activeInput = "code";
+          openMobileKeyboard("roomCode");
         } else if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 310 && pos.y <= 344) {
           activeInput = "pass";
+          openMobileKeyboard("roomPass");
         } else if (pos.x >= cx - 140 && pos.x <= cx - 10 && pos.y >= 365 && pos.y <= 407 && roomCodeInput.length === 4) {
-          connectWs();
-          sendMsg({ action: "join_room", room_code: roomCodeInput, password: passwordInput || null });
-          statusMessage = `Joining room [${roomCodeInput}]...`;
+          closeMobileKeyboard();
+          if (!isConnected) connectWs();
+          sendMsg({ action: "join_room", room_code: roomCodeInput, password: passwordInput || null }); 
+          statusMessage = `Joining room [${roomCodeInput}]...`; 
           setLobbyState(false);
         } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) {
+          closeMobileKeyboard();
           menuMode = "main";
         }
       }
     }
 
     canvas.addEventListener("click", (e) => {
+      if (!inLobby && matchOver) { returnToLobbyFromMatch(); return; }
       handleMenuClick(getCanvasCoords(e.clientX, e.clientY));
     });
-
-    canvas.addEventListener("touchend", (e) => {
-      if (inLobby && e.changedTouches && e.changedTouches.length > 0) {
-        e.preventDefault();
-        const t = e.changedTouches[0];
-        handleMenuClick(getCanvasCoords(t.clientX, t.clientY));
-      }
-    });
+    canvas.addEventListener("touchend", (e) => { 
+      if (e.changedTouches && e.changedTouches.length > 0) {
+        if (!inLobby && matchOver) { returnToLobbyFromMatch(); return; }
+        if (inLobby) {
+          handleMenuClick(getCanvasCoords(e.changedTouches[0].clientX, e.changedTouches[0].clientY)); 
+        }
+      } 
+    }, { passive: true });
 
     window.addEventListener("keydown", (e) => {
       keysDown[e.code] = true;
-
       if (inLobby) {
-        if (menuMode === "host_private" || menuMode === "join_private") {
-          if (e.key === "Backspace") {
-            if (activeInput === "code") roomCodeInput = roomCodeInput.slice(0, -1);
-            else passwordInput = passwordInput.slice(0, -1);
-          } else if (e.key === "Tab") {
+        if (menuMode === "account") {
+          if (e.key === "Tab") {
             e.preventDefault();
-            activeInput = activeInput === "code" ? "pass" : "code";
+            authActiveField = authActiveField === "name" ? "pass" : "name";
+          } else if (e.key === "Backspace") {
+            if (authActiveField === "name") authNameInput = authNameInput.slice(0, -1);
+            else authPassInput = authPassInput.slice(0, -1);
           } else if (e.key.length === 1) {
-            if (activeInput === "code" && roomCodeInput.length < 4) {
-              roomCodeInput += e.key.toUpperCase();
-            } else if (activeInput === "pass" && passwordInput.length < 16) {
-              passwordInput += e.key;
+            if (authActiveField === "name" && authNameInput.length < 8 && /^[a-zA-Z0-9]$/.test(e.key)) {
+              authNameInput += e.key.toUpperCase();
+            } else if (authActiveField === "pass" && authPassInput.length < 12) {
+              authPassInput += e.key;
             }
+          }
+        } else if (menuMode === "host_private" || menuMode === "join_private") {
+          if (e.key === "Backspace") {
+            if (activeInput === "code") roomCodeInput = roomCodeInput.slice(0, -1); 
+            else passwordInput = passwordInput.slice(0, -1);
+          } else if (e.key === "Tab") { 
+            e.preventDefault(); 
+            activeInput = activeInput === "code" ? "pass" : "code"; 
+          } else if (e.key.length === 1) {
+            if (activeInput === "code" && roomCodeInput.length < 4) roomCodeInput += e.key.toUpperCase(); 
+            else if (activeInput === "pass" && passwordInput.length < 16) passwordInput += e.key;
           }
         }
       } else {
-        if (e.code === "KeyE") {
-          if (myShip && myShip.has_autopilot && myShip.mana > 0 && myShip.alive) {
-            myShip.autopilot_active = !myShip.autopilot_active;
-          } else if (myShip) {
-            myShip.autopilot_active = false;
-          }
-        }
-
         if (myShip && myShip.alive) {
-          const currentNode = myShip.current_node;
-          const options = UPGRADE_TREE[currentNode]?.children || [];
-          const nextTier = myShip.tier + 1;
-
+          const currentNode = myShip.current_node; const options = UPGRADE_TREE[currentNode]?.children || []; const nextTier = myShip.tier + 1;
           if (options.length > 0 && nextTier < TIER_XP_THRESHOLDS.length && myShip.xp >= TIER_XP_THRESHOLDS[nextTier]) {
             let chosenIdx = null;
             if (e.code === "Digit1" && options.length >= 1) chosenIdx = 0;
             if (e.code === "Digit2" && options.length >= 2) chosenIdx = 1;
             if (e.code === "Digit3" && options.length >= 3) chosenIdx = 2;
-
-            if (chosenIdx !== null) {
-              const nodeKey = options[chosenIdx];
-              myShip.tier = nextTier;
-              myShip.current_node = nodeKey;
-              UPGRADE_TREE[nodeKey].apply(myShip);
+            if (chosenIdx !== null) { 
+              myShip.tier = nextTier; 
+              myShip.current_node = options[chosenIdx]; 
+              UPGRADE_TREE[options[chosenIdx]].apply(myShip);
+              if (activePilot && nextTier > (activePilot.highest_tier || 0)) {
+                recordAccountStat("highest_tier", nextTier - (activePilot.highest_tier || 0));
+              }
             }
           }
         }
       }
     });
 
-    window.addEventListener("keyup", (e) => {
-      keysDown[e.code] = false;
-    });
+    window.addEventListener("keyup", (e) => { keysDown[e.code] = false; });
 
     function bindTouch(id, keyName, isPressEvent = false) {
-      const el = document.getElementById(id);
-      if (!el) return;
-
-      el.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        if (isPressEvent) {
-          window.dispatchEvent(new KeyboardEvent("keydown", { code: keyName, key: keyName.replace("Digit", "") }));
-        } else {
-          keysDown[keyName] = true;
-        }
-      });
-
-      el.addEventListener("touchend", (e) => {
-        e.preventDefault();
-        if (!isPressEvent) {
-          keysDown[keyName] = false;
-        }
-      });
+      const el = document.getElementById(id); if (!el) return;
+      el.addEventListener("touchstart", (e) => { e.preventDefault(); if (isPressEvent) { window.dispatchEvent(new KeyboardEvent("keydown", { code: keyName, key: keyName.replace("Digit", "") })); } else { keysDown[keyName] = true; } });
+      el.addEventListener("touchend", (e) => { e.preventDefault(); if (!isPressEvent) { keysDown[keyName] = false; } });
     }
 
-    bindTouch("btn-up", "KeyW");
-    bindTouch("btn-left", "KeyA");
-    bindTouch("btn-right", "KeyD");
-    bindTouch("btn-fire", "Space");
+    bindTouch("btn-up", "KeyW"); bindTouch("btn-left", "KeyA"); bindTouch("btn-right", "KeyD"); bindTouch("btn-fire", "Space");
 
-    const autoBtn = document.getElementById("btn-auto");
-    if (autoBtn) {
-      autoBtn.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        if (myShip && myShip.has_autopilot && myShip.mana > 0 && myShip.alive) {
-          myShip.autopilot_active = !myShip.autopilot_active;
-        }
-      });
+    const abilityBtn = document.getElementById("btn-ability");
+    if (abilityBtn) {
+      abilityBtn.addEventListener("touchstart", (e) => { e.preventDefault(); keysDown["KeyE"] = true; });
+      abilityBtn.addEventListener("touchend", (e) => { e.preventDefault(); keysDown["KeyE"] = false; });
     }
-
-    bindTouch("btn-1", "Digit1", true);
-    bindTouch("btn-2", "Digit2", true);
-    bindTouch("btn-3", "Digit3", true);
-
-    function getRotatedPoints(cx, cy, angle, size) {
-      const rad = (angle * Math.PI) / 180;
-      const tx = cx + size * Math.cos(rad);
-      const ty = cy - size * Math.sin(rad);
-      const lx = cx + size * 0.75 * Math.cos(rad + (140 * Math.PI) / 180);
-      const ly = cy - size * 0.75 * Math.sin(rad + (140 * Math.PI) / 180);
-      const rx = cx + size * 0.75 * Math.cos(rad - (140 * Math.PI) / 180);
-      const ry = cy - size * 0.75 * Math.sin(rad - (140 * Math.PI) / 180);
-      return [
-        { x: tx, y: ty },
-        { x: lx, y: ly },
-        { x: rx, y: ry }
-      ];
-    }
-
-    function drawPolygon(targetCtx, pts, fill = false, stroke = true) {
-      if (!pts || pts.length === 0) return;
-      targetCtx.beginPath();
-      targetCtx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) {
-        targetCtx.lineTo(pts[i].x, pts[i].y);
-      }
-      targetCtx.closePath();
-      if (fill) targetCtx.fill();
-      if (stroke) targetCtx.stroke();
-    }
-
-    function drawOffscreenMarker(targetCtx, camX, camY, tx, ty, color) {
-      const dx = tx - camX;
-      const dy = ty - camY;
-      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
-
-      const pad = 26;
-      const scaleX = Math.abs(dx) > 0.001 ? (V_WIDTH / 2 - pad) / Math.abs(dx) : Infinity;
-      const scaleY = Math.abs(dy) > 0.001 ? (V_HEIGHT / 2 - pad) / Math.abs(dy) : Infinity;
-      const s = Math.min(scaleX, scaleY);
-      if (isNaN(s) || !isFinite(s)) return;
-
-      const ex = V_WIDTH / 2 + dx * s;
-      const ey = V_HEIGHT / 2 + dy * s;
-      const ang = Math.atan2(-dy, dx);
-      const ms = 11;
-
-      const pts = [
-        { x: ex + ms * Math.cos(ang), y: ey - ms * Math.sin(ang) },
-        { x: ex + ms * 0.8 * Math.cos(ang + 2.5), y: ey - ms * 0.8 * Math.sin(ang + 2.5) },
-        { x: ex + ms * 0.8 * Math.cos(ang - 2.5), y: ey - ms * 0.8 * Math.sin(ang - 2.5) }
-      ];
-
-      targetCtx.fillStyle = color;
-      targetCtx.strokeStyle = WHITE;
-      targetCtx.lineWidth = 1;
-      drawPolygon(targetCtx, pts, true, true);
-    }
+    bindTouch("btn-1", "Digit1", true); bindTouch("btn-2", "Digit2", true); bindTouch("btn-3", "Digit3", true);
 
     let lastTime = performance.now();
-
     function gameLoop(now) {
-      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      const dt = Math.min((now - lastTime) / 1000, 0.1); 
       lastTime = now;
-
-      try {
+      try { 
         if (inLobby) {
-          updateLobby();
-          renderLobby();
-        } else {
-          updateGame(dt);
-          renderGame();
-        }
-      } catch (err) {
-        console.error("Loop error recovery:", err);
+          renderLobby(); 
+        } else { 
+          updateGame(dt); 
+          renderGame(); 
+        } 
+      } catch (err) { 
+        console.error("GameLoop safety rescue:", err); 
       }
-
-      ctx.fillStyle = "#000000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#000000"; 
+      ctx.fillRect(0, 0, canvas.width, canvas.height); 
       ctx.drawImage(virtualCanvas, 0, 0, canvas.width, canvas.height);
-
       requestAnimationFrame(gameLoop);
     }
     requestAnimationFrame(gameLoop);
 
+    function drawDirectShip(targetCtx, x, y, angle, color, isDead = false) {
+      const rad = (angle * Math.PI) / 180;
+      const size = SHIP_SIZE;
+      
+      const tx = x + size * Math.cos(rad);
+      const ty = y - size * Math.sin(rad);
+      const lx = x + size * 0.75 * Math.cos(rad + (140 * Math.PI) / 180);
+      const ly = y - size * 0.75 * Math.sin(rad + (140 * Math.PI) / 180);
+      const rx = x + size * 0.75 * Math.cos(rad - (140 * Math.PI) / 180);
+      const ry = y - size * 0.75 * Math.sin(rad - (140 * Math.PI) / 180);
+
+      targetCtx.save();
+      targetCtx.beginPath();
+      targetCtx.moveTo(tx, ty);
+      targetCtx.lineTo(lx, ly);
+      targetCtx.lineTo(rx, ry);
+      targetCtx.closePath();
+
+      if (isDead) {
+        targetCtx.globalAlpha = 0.35 + Math.sin(performance.now() / 100) * 0.2;
+        targetCtx.strokeStyle = "rgb(255, 60, 60)";
+        targetCtx.fillStyle = "rgba(255, 60, 60, 0.2)";
+      } else {
+        targetCtx.strokeStyle = color || CYAN;
+        targetCtx.fillStyle = "rgba(15, 25, 45, 0.85)";
+      }
+
+      targetCtx.lineWidth = 3;
+      targetCtx.fill();
+      targetCtx.stroke();
+      targetCtx.restore();
+    }
+
+    function renderLobby() {
+      vctx.fillStyle = BLACK; vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+      for (let i = 0; i < stars.length; i++) {
+        const s = stars[i]; s.x = (s.x - 0.2 + V_WIDTH * 2) % (V_WIDTH * 2);
+        const val = Math.floor(255 * (0.2 + s.z)); vctx.fillStyle = `rgb(${val}, ${val}, ${val + 15})`; vctx.fillRect(s.x / 2, s.y / 2, s.z * 3, s.z * 3);
+      }
+
+      const cx = V_WIDTH / 2;
+
+      if (menuMode === "connecting") {
+        // Full-panel Render boot / reconnect loading screen
+        drawCard(vctx, cx - 260, 90, 520, 420, connectionError ? RAINBOW[1] : CYAN);
+
+        vctx.font = "bold 32px Consolas";
+        vctx.fillStyle = CYAN;
+        vctx.textAlign = "center";
+        vctx.fillText("A S T R A C L A S H", cx, 140);
+
+        vctx.font = "12px Consolas";
+        vctx.fillStyle = GRAY;
+        vctx.fillText("ORBITAL COMBAT  ·  RENDER CLOUD LINK", cx, 165);
+
+        // Decorative ship silhouette
+        const bob = Math.sin(performance.now() / 400) * 4;
+        drawDirectShip(vctx, cx, 220 + bob, -90 + Math.sin(performance.now() / 900) * 8, CYAN, false);
+
+        if (!connectionError) {
+          const spinTime = (performance.now() - connectStartTime) / 1000;
+          const animAngle = spinTime * 3.5;
+          const radius = 22;
+
+          vctx.lineWidth = 3;
+          vctx.strokeStyle = "rgba(0, 255, 255, 0.2)";
+          vctx.beginPath();
+          vctx.arc(cx, 290, radius, 0, Math.PI * 2);
+          vctx.stroke();
+          vctx.strokeStyle = CYAN;
+          vctx.beginPath();
+          vctx.arc(cx, 290, radius, animAngle, animAngle + 1.8);
+          vctx.stroke();
+
+          // Progress bar (Render free tier cold-start ~30–50s)
+          const bootEst = 45;
+          const progress = Math.min(0.95, spinTime / bootEst);
+          const barW = 360, barH = 12, barX = cx - barW / 2, barY = 330;
+          vctx.fillStyle = "rgb(20, 30, 50)";
+          vctx.fillRect(barX, barY, barW, barH);
+          vctx.fillStyle = CYAN;
+          vctx.fillRect(barX, barY, Math.floor(barW * progress), barH);
+          vctx.strokeStyle = "rgba(0, 255, 255, 0.5)";
+          vctx.lineWidth = 1;
+          vctx.strokeRect(barX, barY, barW, barH);
+
+          vctx.font = "bold 15px Consolas";
+          vctx.fillStyle = WHITE;
+          vctx.fillText("LINKING TO RENDER SERVER", cx, 365);
+
+          const dots = ".".repeat(Math.floor(spinTime * 2) % 4);
+          vctx.font = "12px Consolas";
+          vctx.fillStyle = GRAY;
+          vctx.fillText("Waking cloud instance" + dots, cx, 390);
+          vctx.fillText("Free-tier boots often take 30–50 seconds", cx, 412);
+          vctx.fillStyle = "rgba(0, 255, 255, 0.7)";
+          vctx.fillText(`Elapsed ${Math.floor(spinTime)}s`, cx, 438);
+
+          vctx.font = "11px Consolas";
+          vctx.fillStyle = GRAY;
+          vctx.fillText("wss://astraclash-howt.onrender.com", cx, 470);
+        } else {
+          vctx.font = "bold 18px Consolas";
+          vctx.fillStyle = RAINBOW[1];
+          vctx.fillText("SERVER OFFLINE", cx, 280);
+
+          vctx.font = "12px Consolas";
+          vctx.fillStyle = WHITE;
+          vctx.fillText("Could not reach the Render websocket", cx, 310);
+          vctx.fillStyle = GRAY;
+          vctx.fillText("wss://astraclash-howt.onrender.com", cx, 332);
+          vctx.fillText("The free instance may still be cold-starting.", cx, 354);
+          vctx.fillText("Wait a bit, then retry — boots can take ~1 min.", cx, 376);
+
+          const retHover = mousePos.x >= cx - 110 && mousePos.x <= cx + 110 && mousePos.y >= 400 && mousePos.y <= 448;
+          drawCard(vctx, cx - 110, 400, 220, 48, retHover ? WHITE : RAINBOW[3]);
+          vctx.font = "bold 14px Consolas";
+          vctx.fillStyle = retHover ? WHITE : RAINBOW[3];
+          vctx.fillText("RETRY CONNECTION", cx, 430);
+        }
+      } else if (menuMode === "account") {
+        drawCard(vctx, cx - 190, 120, 380, 300, CYAN);
+        
+        // Tabs
+        const isReg = authTab === "register";
+        drawCard(vctx, cx - 150, 140, 140, 35, isReg ? CYAN : DARK_GRAY);
+        vctx.font = "bold 14px Consolas";
+        vctx.fillStyle = isReg ? CYAN : GRAY;
+        vctx.textAlign = "center";
+        vctx.fillText("NEW PILOT", cx - 80, 162);
+
+        drawCard(vctx, cx + 10, 140, 140, 35, !isReg ? CYAN : DARK_GRAY);
+        vctx.fillStyle = !isReg ? CYAN : GRAY;
+        vctx.fillText("LOGIN", cx + 80, 162);
+
+        // Inputs
+        vctx.font = "11px Consolas";
+        vctx.fillStyle = WHITE;
+        vctx.textAlign = "left";
+        vctx.fillText("CALLSIGN (Max 8 letters):", cx - 140, 202);
+        drawCard(vctx, cx - 140, 210, 280, 38, authActiveField === "name" ? RAINBOW[3] : GRAY);
+        vctx.font = "bold 16px Consolas";
+        vctx.fillStyle = RAINBOW[3];
+        vctx.fillText(authNameInput + (authActiveField === "name" ? "|" : ""), cx - 130, 234);
+
+        vctx.font = "11px Consolas";
+        vctx.fillStyle = WHITE;
+        vctx.fillText("PASS-KEY (Secret):", cx - 140, 262);
+        drawCard(vctx, cx - 140, 270, 280, 38, authActiveField === "pass" ? RAINBOW[3] : GRAY);
+        vctx.font = "bold 16px Consolas";
+        vctx.fillStyle = RAINBOW[3];
+        const masked = "•".repeat(authPassInput.length);
+        vctx.fillText(masked + (authActiveField === "pass" ? "|" : ""), cx - 130, 294);
+
+        if (authMessage) {
+          vctx.font = "bold 11px Consolas";
+          vctx.fillStyle = RAINBOW[1];
+          vctx.textAlign = "center";
+          vctx.fillText(authMessage, cx, 323);
+        }
+
+        const canAct = authNameInput.trim().length >= 2;
+        drawCard(vctx, cx - 140, 335, 280, 45, canAct ? RAINBOW[4] : DARK_GRAY);
+        vctx.font = "bold 15px Consolas";
+        vctx.fillStyle = canAct ? WHITE : GRAY;
+        vctx.textAlign = "center";
+        vctx.fillText(isReg ? "CREATE PILOT PROFILE" : "AUTHENTICATE", cx, 362);
+
+      } else if (menuMode === "waiting") {
+        drawCard(vctx, cx - 180, 220, 360, 160, CYAN);
+        vctx.font = "bold 18px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
+        vctx.fillText(`ROOM CODE: ${roomCode || "PUBLIC"}`, cx, 260);
+        vctx.font = "12px Consolas"; vctx.fillStyle = WHITE;
+        vctx.fillText("Waiting for opponents to connect (Max 6)...", cx, 300);
+        const pulse = Math.floor((performance.now() / 50) % 10);
+        vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 340, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
+      } else {
+        vctx.font = "bold 36px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center"; vctx.fillText("A S T R A C L A S H", cx, 75);
+        vctx.font = "12px Consolas"; vctx.fillStyle = GRAY; vctx.fillText("6-PLAYER ORBITAL COMBAT & UPGRADE ARENA", cx, 102);
+
+        // Profile Card
+        if (activePilot) {
+          drawCard(vctx, cx - 250, 115, 500, 50, "rgba(0, 255, 255, 0.4)");
+          vctx.font = "bold 13px Consolas";
+          vctx.fillStyle = RAINBOW[4];
+          vctx.textAlign = "left";
+          vctx.fillText(`PILOT: ${activePilot.username}`, cx - 235, 136);
+          vctx.fillStyle = WHITE;
+          vctx.font = "11px Consolas";
+          vctx.fillText(`CAREER XP: ${activePilot.career_xp || 0}   ASTEROIDS: ${activePilot.asteroids || 0}   MAX TIER: ${activePilot.highest_tier || 0}`, cx - 235, 154);
+        }
+
+        if (menuMode === "main") {
+          const buttons = [ { text: "QUICK PLAY (PUBLIC)", y: 185, col: CYAN }, { text: "HOST PRIVATE ROOM", y: 250, col: WHITE }, { text: "JOIN PRIVATE ROOM", y: 315, col: WHITE } ];
+          for (const b of buttons) {
+            const hovered = mousePos.x >= cx - 150 && mousePos.x <= cx + 150 && mousePos.y >= b.y && mousePos.y <= b.y + 48;
+            drawCard(vctx, cx - 150, b.y, 300, 48, hovered ? CYAN : b.col); vctx.font = "bold 16px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center"; vctx.fillText(b.text, cx, b.y + 30);
+          }
+          const logHover = mousePos.x >= cx - 60 && mousePos.x <= cx + 60 && mousePos.y >= 385 && mousePos.y <= 415;
+          drawCard(vctx, cx - 60, 385, 120, 30, logHover ? RAINBOW[1] : GRAY); vctx.font = "12px Consolas"; vctx.fillStyle = logHover ? RAINBOW[1] : WHITE; vctx.textAlign = "center"; vctx.fillText("LOGOUT", cx, 404);
+
+        } else if (menuMode === "host_private") {
+          drawCard(vctx, cx - 230, 100, 460, 380, CYAN);
+          vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
+          vctx.fillText("HOST PRIVATE ROOM (MAX 6)", cx, 130);
+          vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+          vctx.fillText("MODE", cx, 155);
+          // Mode buttons
+          const modes = [
+            { id: "ffa", label: "FFA", x: cx - 200 },
+            { id: "teams_3v3", label: "3v3", x: cx - 60 },
+            { id: "teams_2v2v2", label: "2v2v2", x: cx + 70 }
+          ];
+          for (const m of modes) {
+            const on = matchConfig.mode === m.id;
+            drawCard(vctx, m.x, 165, 120, 35, on ? CYAN : DARK_GRAY);
+            vctx.font = "bold 14px Consolas";
+            vctx.fillStyle = on ? CYAN : GRAY;
+            vctx.fillText(m.label, m.x + 60, 188);
+          }
+          // Timer row
+          drawCard(vctx, cx - 200, 215, 150, 30, matchConfig.useTimer ? CYAN : DARK_GRAY);
+          vctx.font = "12px Consolas";
+          vctx.fillStyle = matchConfig.useTimer ? WHITE : GRAY;
+          vctx.fillText(matchConfig.useTimer ? "TIMER ON" : "TIMER OFF", cx - 125, 235);
+          if (matchConfig.useTimer) {
+            drawCard(vctx, cx + 50, 215, 40, 30, GRAY);
+            drawCard(vctx, cx + 150, 215, 40, 30, GRAY);
+            vctx.fillStyle = WHITE;
+            vctx.fillText("-", cx + 70, 235);
+            vctx.fillText("+", cx + 170, 235);
+            vctx.fillStyle = RAINBOW[3];
+            vctx.font = "bold 14px Consolas";
+            vctx.fillText(`${Math.round(matchConfig.durationSec / 60)} MIN`, cx + 120, 235);
+          }
+          // Kills row
+          drawCard(vctx, cx - 200, 255, 150, 30, matchConfig.useKills ? CYAN : DARK_GRAY);
+          vctx.font = "12px Consolas";
+          vctx.fillStyle = matchConfig.useKills ? WHITE : GRAY;
+          vctx.fillText(matchConfig.useKills ? "KILLS ON" : "KILLS OFF", cx - 125, 275);
+          if (matchConfig.useKills) {
+            drawCard(vctx, cx + 50, 255, 40, 30, GRAY);
+            drawCard(vctx, cx + 150, 255, 40, 30, GRAY);
+            vctx.fillStyle = WHITE;
+            vctx.fillText("-", cx + 70, 275);
+            vctx.fillText("+", cx + 170, 275);
+            vctx.fillStyle = RAINBOW[3];
+            vctx.font = "bold 14px Consolas";
+            vctx.fillText(matchConfig.killLimit === 0 ? "UNLIM" : `${matchConfig.killLimit}`, cx + 120, 275);
+          }
+          // Password
+          vctx.font = "11px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+          vctx.fillText("Password (optional):", cx - 140, 305);
+          drawCard(vctx, cx - 140, 310, 280, 36, activeInput === "pass" ? RAINBOW[3] : GRAY);
+          vctx.font = "bold 16px Consolas"; vctx.fillStyle = RAINBOW[3];
+          vctx.fillText((passwordInput || "") + (activeInput === "pass" ? "|" : ""), cx - 130, 334);
+          drawCard(vctx, cx - 140, 365, 130, 42, RAINBOW[4]);
+          drawCard(vctx, cx + 10, 365, 130, 42, RAINBOW[1]);
+          vctx.textAlign = "center"; vctx.font = "14px Consolas";
+          vctx.fillStyle = RAINBOW[4]; vctx.fillText("CREATE", cx - 75, 391);
+          vctx.fillStyle = RAINBOW[1]; vctx.fillText("BACK", cx + 75, 391);
+          vctx.font = "10px Consolas"; vctx.fillStyle = GRAY;
+          vctx.fillText("Timer max 20 min · Kill limit 0 = unlimited", cx, 450);
+        } else if (menuMode === "join_private") {
+          drawCard(vctx, cx - 170, 180, 340, 260, CYAN); vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center"; vctx.fillText("ENTER PRIVATE LOBBY", cx, 215);
+          vctx.font = "12px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left"; vctx.fillText("4-Letter Code:", cx - 140, 240);
+          drawCard(vctx, cx - 140, 245, 280, 34, activeInput === "code" ? RAINBOW[3] : GRAY); vctx.font = "bold 18px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.fillText(roomCodeInput + (activeInput === "code" ? "|" : ""), cx - 130, 269);
+          vctx.font = "12px Consolas"; vctx.fillStyle = WHITE; vctx.fillText("Password (if required):", cx - 140, 305);
+          drawCard(vctx, cx - 140, 310, 280, 34, activeInput === "pass" ? RAINBOW[3] : GRAY); vctx.font = "bold 18px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.fillText(passwordInput + (activeInput === "pass" ? "|" : ""), cx - 130, 334);
+          drawCard(vctx, cx - 140, 365, 130, 42, RAINBOW[4]); drawCard(vctx, cx + 10, 365, 130, 42, RAINBOW[1]);
+          vctx.textAlign = "center"; vctx.font = "14px Consolas"; vctx.fillStyle = RAINBOW[4]; vctx.fillText("ENTER", cx - 75, 391); vctx.fillStyle = RAINBOW[1]; vctx.fillText("BACK", cx + 75, 391);
+        }
+      }
+      vctx.textAlign = "center"; vctx.font = "13px Consolas"; vctx.fillStyle = statusColor; vctx.fillText(statusMessage, cx, V_HEIGHT - 30);
+    }
+
     function updateGame(dt) {
-      if (!myShip.alive) {
-        myShip.respawn_timer -= dt;
-        myShip.vx = 0;
-        myShip.vy = 0;
+      if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 40);
+      if (!Number.isFinite(screenShake)) screenShake = 0;
+
+      // Match clock (host drives; others follow packets)
+      if (!matchOver) {
+        if (myId === 1) {
+          if (matchConfig.useTimer) {
+            matchTimeLeft = Math.max(0, matchTimeLeft - dt);
+          }
+          const standings = getMatchStandings();
+          const topKills = standings.length ? standings[0].kills : 0;
+          if (matchConfig.useKills && matchConfig.killLimit > 0 && topKills >= matchConfig.killLimit) {
+            const label = isTeamMode() ? (standings[0].name + " TEAM") : standings[0].name;
+            finishMatch(`${label} reached ${matchConfig.killLimit} kills!`);
+          } else if (matchConfig.useTimer && matchTimeLeft <= 0) {
+            finishMatch("Time limit reached!");
+          }
+        }
+      } else {
+        // Frozen combat — still allow return input
+        if (keysDown["Space"] || keysDown["Enter"] || keysDown["Escape"]) {
+          returnToLobbyFromMatch();
+          keysDown["Space"] = false;
+          keysDown["Enter"] = false;
+          keysDown["Escape"] = false;
+        }
+        // Skip the rest of simulation while results show
+        netAccumulator += dt;
+        if (netAccumulator >= NET_TICK_RATE) {
+          netAccumulator = 0;
+          if (myShip && myId === 1) {
+            sendMsg({
+              action: "game_packet",
+              payload: {
+                ship: {
+                  id: myShip.id,
+                  world_x: Number(myShip.world_x.toFixed(1)),
+                  world_y: Number(myShip.world_y.toFixed(1)),
+                  angle: Math.round(myShip.angle),
+                  hp: myShip.hp,
+                  max_hp: myShip.max_hp,
+                  alive: myShip.alive,
+                  xp: myShip.xp,
+                  kills: myShip.kills || 0,
+                  stasis: false,
+                  name: myShip.name
+                },
+                match_config: matchConfig,
+                match_time: matchTimeLeft,
+                match_over: true,
+                match_reason: statusMessage
+              }
+            });
+          }
+        }
+        return;
+      }
+
+      if (lasers.length > 80) lasers.splice(0, lasers.length - 80);
+      if (particles.length > 120) particles.splice(0, particles.length - 120);
+      
+      if (myShip) {
+        if (myShip.stasis_timer > 0) myShip.stasis_timer -= dt;
+        if (!Number.isFinite(myShip.world_x)) myShip.world_x = 0;
+        if (!Number.isFinite(myShip.world_y)) myShip.world_y = 0;
+        if (!Number.isFinite(myShip.vx)) myShip.vx = 0;
+        if (!Number.isFinite(myShip.vy)) myShip.vy = 0;
+        if (!Number.isFinite(myShip.angle)) myShip.angle = 0;
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) { const p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= dt; if (p.life <= 0) particles.splice(i, 1); }
+      for (let i = trails.length - 1; i >= 0; i--) { trails[i].life -= dt * 2.0; if (trails[i].life <= 0) trails.splice(i, 1); }
+
+      if (myShip && !myShip.alive) {
+        myShip.respawn_timer -= dt; myShip.vx = 0; myShip.vy = 0;
         if (myShip.respawn_timer <= 0) {
-          myShip.alive = true;
-          myShip.hp = myShip.max_hp;
-          myShip.world_x = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1));
-          myShip.world_y = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1));
-          myShip.vx = 0.0;
-          myShip.vy = 0.0;
-          myShip.mana = 25.0;
-          myShip.respawn_timer = 0;
+          myShip.alive = true; myShip.hp = myShip.max_hp;
+          myShip.world_x = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1)); 
+          myShip.world_y = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1)); 
+          myShip.vx = 0.0; myShip.vy = 0.0; myShip.mana = 25.0; myShip.respawn_timer = 0;
         }
       }
 
-      if (myShip.cooldown > 0) {
-        myShip.cooldown -= dt;
-      }
+      if (myShip && myShip.cooldown > 0) myShip.cooldown -= dt;
+      if (myShip && myShip.dash_cooldown > 0) myShip.dash_cooldown -= dt;
 
-      function emitShot(angDeg, offsetFwd, offsetSide) {
-        if (!myShip.alive) return;
-        const rAng = (angDeg * Math.PI) / 180;
-        const perp = rAng + Math.PI / 2;
-        const lx = Number((myShip.world_x + offsetFwd * Math.cos(rAng) + offsetSide * Math.cos(perp)).toFixed(1));
-        const ly = Number((myShip.world_y - offsetFwd * Math.sin(rAng) - offsetSide * Math.sin(perp)).toFixed(1));
-        const isMissileProj = Boolean(myShip.is_missile);
-        const l = {
-          x: lx,
-          y: ly,
-          angle: Math.round(angDeg),
-          owner: myId,
-          dmg: myShip.shot_damage,
-          pierce: Boolean(myShip.piercing),
-          speed: myShip.laser_speed,
-          is_missile: isMissileProj
-        };
-        lasers.push(l);
+      function emitShot(angDeg, offsetFwd, offsetSide, customLife = null, isMine = false) {
+        if (!myShip || !myShip.alive) return;
+        const rAng = (angDeg * Math.PI) / 180; const perp = rAng + Math.PI / 2;
+        const lx = Number((myShip.world_x + offsetFwd * Math.cos(rAng) + offsetSide * Math.cos(perp)).toFixed(1)); const ly = Number((myShip.world_y - offsetFwd * Math.sin(rAng) - offsetSide * Math.sin(perp)).toFixed(1));
+        const isMis = isMine ? false : Boolean(myShip.is_missile);
+        let shotDmg = isMine ? myShip.shot_damage * 2 : myShip.shot_damage;
+        if (isMis) shotDmg = 1; // missiles never one-shot
+        const l = { x: lx, y: ly, angle: Math.round(angDeg), owner: myId, dmg: shotDmg, pierce: isMine ? false : Boolean(myShip.piercing), speed: isMine ? 0 : myShip.laser_speed, is_missile: isMis, is_mine: isMine, boomerang: isMine ? false : Boolean(myShip.boomerang) };
+        if (customLife !== null) l.life = customLife; 
+        lasers.push(l); 
         outgoingLaserQueue.push(l);
       }
 
-      if (myShip.alive && myShip.has_autopilot && myShip.autopilot_active) {
-        if (myShip.mana > 0) {
-          myShip.mana = Math.max(0.0, myShip.mana - 14 * dt);
-          let closestDistSq = Infinity;
-          let targetPos = null;
-
-          for (const pid in remoteShips) {
-            const p = remoteShips[pid];
-            if (!p || !p.alive || p.hp <= 0) continue;
-            const dx = p.world_x - myShip.world_x;
-            const dy = p.world_y - myShip.world_y;
-            const dSq = dx * dx + dy * dy;
-            if (dSq < closestDistSq) {
-              closestDistSq = dSq;
-              targetPos = { x: p.world_x, y: p.world_y };
-            }
-          }
-
-          if (targetPos) {
-            const tDx = targetPos.x - myShip.world_x;
-            const tDy = targetPos.y - myShip.world_y;
-            const targetAng = ((Math.atan2(-tDy, tDx) * 180) / Math.PI + 360) % 360;
-            const diff = ((targetAng - myShip.angle + 180) % 360) - 180;
-            myShip.angle += Math.max(-myShip.rot_speed, Math.min(myShip.rot_speed, diff));
-
-            const rad = (myShip.angle * Math.PI) / 180;
-            const thrust = 0.06 * myShip.move_speed;
-            myShip.vx += thrust * Math.cos(rad);
-            myShip.vy -= thrust * Math.sin(rad);
-
-            if (Math.abs(diff) < 16 && myShip.cooldown <= 0) {
-              emitShot(myShip.angle, SHIP_SIZE, 0);
-              myShip.cooldown = myShip.cooldown_max;
-            }
-          }
-        } else {
-          myShip.autopilot_active = false;
-        }
+      function emitStasis() {
+        if (!myShip || !myShip.alive) return;
+        const rad = (myShip.angle * Math.PI) / 180;
+        const lx = Number((myShip.world_x + (SHIP_SIZE + 10) * Math.cos(rad)).toFixed(1)); const ly = Number((myShip.world_y - (SHIP_SIZE + 10) * Math.sin(rad)).toFixed(1));
+        const l = { x: lx, y: ly, angle: Math.round(myShip.angle), owner: myId, dmg: Math.floor(2 + myShip.shield_charge * 4), pierce: false, speed: 8.0, is_missile: false, is_mine: false, boomerang: false, is_stasis: true, stasis_time: 1.5 + myShip.shield_charge * 1.5, size: 15 + myShip.shield_charge * 25 };
+        lasers.push(l); 
+        outgoingLaserQueue.push(l);
       }
 
-      if (myShip.alive && !myShip.autopilot_active) {
-        let turn = 0;
-        if (keysDown["KeyA"] || keysDown["ArrowLeft"]) turn += 1;
-        if (keysDown["KeyD"] || keysDown["ArrowRight"]) turn -= 1;
-        myShip.angle += turn * myShip.rot_speed;
+      if (myShip && myShip.alive) {
+        let turn = 0; if (keysDown["KeyA"] || keysDown["ArrowLeft"]) turn += 1; if (keysDown["KeyD"] || keysDown["ArrowRight"]) turn -= 1; myShip.angle += turn * myShip.rot_speed;
+
+        {
+          const eHeld = !!keysDown["KeyE"];
+          const eTap = eHeld && !eKeyWasDown;
+          eKeyWasDown = eHeld;
+
+          if (myShip.stasis_timer <= 0) {
+            if (myShip.can_dash && eTap && myShip.mana >= 40 && myShip.dash_cooldown <= 0) {
+              myShip.mana -= 40;
+              myShip.dash_cooldown = 1.5;
+              const rad = myShip.angle * Math.PI / 180;
+              myShip.world_x += Math.cos(rad) * 350;
+              myShip.world_y -= Math.sin(rad) * 350;
+              spawnParticles(myShip.world_x, myShip.world_y, CYAN, 15);
+            } else if (myShip.has_stasis_field) {
+              // Press E: start force field around ship. Press E again: launch it.
+              if (eTap) {
+                if (!myShip.is_charging_shield) {
+                  if (myShip.mana > 5) {
+                    myShip.is_charging_shield = true;
+                    myShip.shield_charge = 0.15; // starts as a small field around you
+                  }
+                } else {
+                  emitStasis();
+                  myShip.is_charging_shield = false;
+                  myShip.shield_charge = 0;
+                }
+              }
+              // Grow the field over time while active (drains mana)
+              if (myShip.is_charging_shield) {
+                if (myShip.mana > 0) {
+                  myShip.shield_charge = Math.min(myShip.shield_charge + dt * 0.85, 3.0);
+                  myShip.mana = Math.max(0, myShip.mana - dt * 12);
+                } else {
+                  // Out of mana — auto-launch at current size
+                  emitStasis();
+                  myShip.is_charging_shield = false;
+                  myShip.shield_charge = 0;
+                }
+              }
+            }
+          }
+        }
 
         if (keysDown["KeyW"] || keysDown["ArrowUp"]) {
-          const rad = (myShip.angle * Math.PI) / 180;
-          const thrust = 0.065 * myShip.move_speed;
-          myShip.vx += thrust * Math.cos(rad);
-          myShip.vy -= thrust * Math.sin(rad);
+          const rad = (myShip.angle * Math.PI) / 180; const thrust = 0.065 * myShip.move_speed;
+          myShip.vx += thrust * Math.cos(rad); myShip.vy -= thrust * Math.sin(rad); trails.push({x: myShip.world_x - Math.cos(rad) * SHIP_SIZE, y: myShip.world_y + Math.sin(rad) * SHIP_SIZE, life: 1.0, color: myShip.color});
         }
 
-        if ((keysDown["Space"] || keysDown["KeyS"] || keysDown["ArrowDown"]) && myShip.cooldown <= 0) {
-          const rad = (myShip.angle * Math.PI) / 180;
-
-          if (myShip.cannons === 2) {
-            emitShot(myShip.angle, SHIP_SIZE, 8);
-            emitShot(myShip.angle, SHIP_SIZE, -8);
-          } else {
-            emitShot(myShip.angle, SHIP_SIZE, 0);
+        {
+          const fireHeld = !!(keysDown["Space"] || keysDown["KeyS"] || keysDown["ArrowDown"]);
+          const fireTap = fireHeld && !fireKeyWasDown;
+          fireKeyWasDown = fireHeld;
+          // Hold-to-fire only with Gatling Laser; otherwise one shot per press
+          const wantFire = myShip.hold_fire ? fireHeld : fireTap;
+          if (wantFire && myShip.cooldown <= 0 && myShip.stasis_timer <= 0 && !myShip.is_charging_shield) {
+            const rad = (myShip.angle * Math.PI) / 180;
+            if (myShip.flak_mode) { for (let i = -3; i <= 3; i++) emitShot((myShip.angle + i * 8 + 360) % 360, SHIP_SIZE, 0, 0.35); } 
+            else {
+              if (myShip.cannons === 2) { emitShot(myShip.angle, SHIP_SIZE, 8); emitShot(myShip.angle, SHIP_SIZE, -8); } else { emitShot(myShip.angle, SHIP_SIZE, 0); }
+              if (myShip.spread_shot) { emitShot((myShip.angle + 15) % 360, SHIP_SIZE, 0); emitShot((myShip.angle - 15) % 360, SHIP_SIZE, 0); }
+              if (myShip.rear_cannon) emitShot((myShip.angle + 180) % 360, SHIP_SIZE * 0.7, 0);
+            }
+            myShip.cooldown = myShip.cooldown_max; myShip.world_x -= 0.6 * Math.cos(rad); myShip.world_y += 0.6 * Math.sin(rad);
           }
-
-          if (myShip.spread_shot) {
-            emitShot((myShip.angle + 15) % 360, SHIP_SIZE, 0);
-            emitShot((myShip.angle - 15) % 360, SHIP_SIZE, 0);
-          }
-
-          if (myShip.rear_cannon) {
-            emitShot((myShip.angle + 180) % 360, SHIP_SIZE * 0.7, 0);
-          }
-
-          myShip.cooldown = myShip.cooldown_max;
-          myShip.world_x -= 0.6 * Math.cos(rad);
-          myShip.world_y += 0.6 * Math.sin(rad);
         }
+
+        if (myShip.drops_mines) { myShip.mine_timer -= dt; if (myShip.mine_timer <= 0) { myShip.mine_timer = 2.5; emitShot(myShip.angle, -SHIP_SIZE, 0, 12.0, true); } }
       }
 
-      if (myShip.alive) {
-        myShip.vx *= 0.96;
-        myShip.vy *= 0.96;
-        myShip.world_x += myShip.vx;
-        myShip.world_y += myShip.vy;
-
+      if (myShip && myShip.alive) {
+        myShip.vx *= 0.96; myShip.vy *= 0.96;
+        myShip.world_x += myShip.vx; myShip.world_y += myShip.vy;
         const margin = SHIP_SIZE + 4;
-        if (myShip.world_x < -WORLD_BOUND + margin) {
-          myShip.world_x = -WORLD_BOUND + margin;
-          myShip.vx = Math.abs(myShip.vx) * 0.8;
-        } else if (myShip.world_x > WORLD_BOUND - margin) {
-          myShip.world_x = WORLD_BOUND - margin;
-          myShip.vx = -Math.abs(myShip.vx) * 0.8;
-        }
-
-        if (myShip.world_y < -WORLD_BOUND + margin) {
-          myShip.world_y = -WORLD_BOUND + margin;
-          myShip.vy = Math.abs(myShip.vy) * 0.8;
-        } else if (myShip.world_y > WORLD_BOUND - margin) {
-          myShip.world_y = WORLD_BOUND - margin;
-          myShip.vy = -Math.abs(myShip.vy) * 0.8;
-        }
+        if (myShip.world_x < -WORLD_BOUND + margin) { myShip.world_x = -WORLD_BOUND + margin; myShip.vx = Math.abs(myShip.vx) * 0.8; } else if (myShip.world_x > WORLD_BOUND - margin) { myShip.world_x = WORLD_BOUND - margin; myShip.vx = -Math.abs(myShip.vx) * 0.8; }
+        if (myShip.world_y < -WORLD_BOUND + margin) { myShip.world_y = -WORLD_BOUND + margin; myShip.vy = Math.abs(myShip.vy) * 0.8; } else if (myShip.world_y > WORLD_BOUND - margin) { myShip.world_y = WORLD_BOUND - margin; myShip.vy = -Math.abs(myShip.vy) * 0.8; }
 
         for (let i = 0; i < asteroids.length; i++) {
-          const a = asteroids[i];
-          const dx = myShip.world_x - a.x;
-          const dy = myShip.world_y - a.y;
-          const distSq = dx * dx + dy * dy;
-          const minDist = a.r + SHIP_SIZE - 2;
-
+          const a = asteroids[i]; const dx = myShip.world_x - a.x; const dy = myShip.world_y - a.y; const distSq = dx * dx + dy * dy; const minDist = a.r + SHIP_SIZE - 2;
           if (distSq < minDist * minDist && distSq > 0.001) {
-            const dist = Math.sqrt(distSq);
-            const nx = dx / dist;
-            const ny = dy / dist;
-            const overlap = minDist - dist;
-            myShip.world_x += nx * overlap;
-            myShip.world_y += ny * overlap;
-            const bounce = 3.5 * myShip.ram_power;
-            myShip.vx = nx * bounce;
-            myShip.vy = ny * bounce;
+            const dist = Math.sqrt(distSq); const nx = dx / dist; const ny = dy / dist; const overlap = minDist - dist;
+            myShip.world_x += nx * overlap; myShip.world_y += ny * overlap; const bounce = 3.5 * myShip.ram_power; myShip.vx = nx * bounce; myShip.vy = ny * bounce; screenShake = Math.min(screenShake + 3, 10);
           }
         }
       }
 
-      // High-performance asteroid-to-asteroid elastic collisions using squared distance
       for (let i = 0; i < asteroids.length; i++) {
         const a1 = asteroids[i];
         for (let j = i + 1; j < asteroids.length; j++) {
-          const a2 = asteroids[j];
-          const dx = a2.x - a1.x;
-          const dy = a2.y - a1.y;
-          const distSq = dx * dx + dy * dy;
-          const minDist = a1.r + a2.r;
-
+          const a2 = asteroids[j]; const dx = a2.x - a1.x; const dy = a2.y - a1.y; const distSq = dx * dx + dy * dy; const minDist = a1.r + a2.r;
           if (distSq < minDist * minDist && distSq > 0.001) {
-            const dist = Math.sqrt(distSq);
-            const nx = dx / dist;
-            const ny = dy / dist;
-            const overlap = (minDist - dist) * 0.5;
-
-            a1.x -= nx * overlap;
-            a1.y -= ny * overlap;
-            a2.x += nx * overlap;
-            a2.y += ny * overlap;
-
-            const kx = a1.vx - a2.vx;
-            const ky = a1.vy - a2.vy;
-            const p = nx * kx + ny * ky;
-
-            a1.vx -= p * nx;
-            a1.vy -= p * ny;
-            a2.vx += p * nx;
-            a2.vy += p * ny;
+            const dist = Math.sqrt(distSq); const nx = dx / dist; const ny = dy / dist; const overlap = (minDist - dist) * 0.5;
+            a1.x -= nx * overlap; a1.y -= ny * overlap; a2.x += nx * overlap; a2.y += ny * overlap;
+            const p = nx * (a1.vx - a2.vx) + ny * (a1.vy - a2.vy); a1.vx -= p * nx; a1.vy -= p * ny; a2.vx += p * nx; a2.vy += p * ny;
           }
         }
       }
 
       for (let i = lasers.length - 1; i >= 0; i--) {
-        const l = lasers[i];
-        if (!l) {
-          lasers.splice(i, 1);
-          continue;
-        }
+        const l = lasers[i]; if (!l) { lasers.splice(i, 1); continue; }
+        if (l.life !== undefined) { l.life -= dt; if (l.life <= 0) { lasers.splice(i, 1); continue; } }
+        if (l.boomerang) l.speed -= 25.0 * dt;
+        const hitRad = l.size !== undefined ? l.size : 4.5;
 
         if (l.is_missile) {
-          let target = null;
-          let minDSq = 810000; // 900^2
-          if (Number(l.owner) === myId) {
+          // Only home toward ships visible on the shooter's screen
+          const halfW = V_WIDTH * 0.5 + 30;
+          const halfH = V_HEIGHT * 0.5 + 30;
+          function visibleFrom(vx, vy, tx, ty) {
+            return Math.abs(tx - vx) <= halfW && Math.abs(ty - vy) <= halfH;
+          }
+          let target = null; let minDSq = 810000;
+          if (Number(l.owner) === myId && myShip) {
             for (const pid in remoteShips) {
               const p = remoteShips[pid];
               if (!p || !p.alive || p.hp <= 0) continue;
+              if (sameTeam(myId, p.id)) continue;
+              if (!visibleFrom(myShip.world_x, myShip.world_y, p.world_x, p.world_y)) continue;
               const dSq = (p.world_x - l.x) * (p.world_x - l.x) + (p.world_y - l.y) * (p.world_y - l.y);
-              if (dSq < minDSq) {
-                minDSq = dSq;
-                target = p;
-              }
+              if (dSq < minDSq) { minDSq = dSq; target = p; }
             }
-          } else if (myShip.alive && myShip.hp > 0) {
-            const dSq = (myShip.world_x - l.x) * (myShip.world_x - l.x) + (myShip.world_y - l.y) * (myShip.world_y - l.y);
-            if (dSq < minDSq) {
-              target = myShip;
+          } else if (myShip && myShip.alive && myShip.hp > 0) {
+            // Enemy missile: only home onto me if I am on the owner's screen
+            const ownerShip = remoteShips[Number(l.owner)];
+            const ox = ownerShip ? ownerShip.world_x : l.x;
+            const oy = ownerShip ? ownerShip.world_y : l.y;
+            if (visibleFrom(ox, oy, myShip.world_x, myShip.world_y)) {
+              const dSq = (myShip.world_x - l.x) * (myShip.world_x - l.x) + (myShip.world_y - l.y) * (myShip.world_y - l.y);
+              if (dSq < minDSq) target = myShip;
             }
           }
-
           if (target) {
             const targetAng = ((Math.atan2(-(target.world_y - l.y), target.world_x - l.x) * 180) / Math.PI + 360) % 360;
             const diff = ((targetAng - l.angle + 180) % 360) - 180;
@@ -1124,96 +1749,165 @@
           }
         }
 
-        const r = (l.angle * Math.PI) / 180;
-        const spd = l.speed || 14.0;
-        l.x += spd * Math.cos(r);
-        l.y -= spd * Math.sin(r);
+        const r = (l.angle * Math.PI) / 180; const spd = l.speed !== undefined ? l.speed : 14.0; l.x += spd * Math.cos(r); l.y -= spd * Math.sin(r);
+        const distFromShipSq = myShip ? (l.x - myShip.world_x) * (l.x - myShip.world_x) + (l.y - myShip.world_y) * (l.y - myShip.world_y) : 0;
+        if (Math.abs(l.x) > WORLD_BOUND || Math.abs(l.y) > WORLD_BOUND || distFromShipSq > 2890000) { lasers.splice(i, 1); continue; }
 
-        const distFromShipSq = (l.x - myShip.world_x) * (l.x - myShip.world_x) + (l.y - myShip.world_y) * (l.y - myShip.world_y);
-        if (
-          Math.abs(l.x) > WORLD_BOUND ||
-          Math.abs(l.y) > WORLD_BOUND ||
-          distFromShipSq > 2890000 // 1700^2
-        ) {
-          lasers.splice(i, 1);
-          continue;
-        }
-
-        let hitAst = false;
-        const dmg = l.dmg || 1;
+        let hitAst = false; const dmg = l.dmg || 1;
         for (let j = 0; j < asteroids.length; j++) {
           const a = asteroids[j];
+          if (a.hp <= 0) continue;
           const dAstSq = (l.x - a.x) * (l.x - a.x) + (l.y - a.y) * (l.y - a.y);
-          if (dAstSq < a.r * a.r) {
-            a.hp -= dmg;
+          if (dAstSq < (a.r + hitRad) * (a.r + hitRad)) {
             hitAst = true;
-            if (a.hp <= 0) {
-              if (a.is_ore) {
-                spawnOreCluster(a.x, a.y, 4 + Math.floor(Math.random() * 4));
-              } else if (Math.random() < 0.25) {
-                spawnOreCluster(a.x, a.y, 2 + Math.floor(Math.random() * 3));
+            const ownerIsMe = Number(l.owner) === myId;
+
+            if (myId === 1) {
+              // Host is authoritative for asteroid HP. Only apply own shots here;
+              // other players' shots arrive as asteroid_hits (lasers often expire before host sees them).
+              if (ownerIsMe) {
+                a.hp -= dmg;
+                if (a.hp <= 0) {
+                  spawnParticles(a.x, a.y, a.is_bomb ? 'rgb(255, 50, 50)' : ASTEROID_COLOR, 15);
+                  recordAccountStat("asteroids", 1);
+                  if (a.is_bomb) {
+                    screenShake = 15;
+                    for (const pid in remoteShips) {
+                      const rp = remoteShips[pid];
+                      if (rp && rp.alive && Math.hypot(rp.world_x - a.x, rp.world_y - a.y) < 200) queueHit(rp.id, 4);
+                    }
+                    if (myShip && myShip.alive && Math.hypot(myShip.world_x - a.x, myShip.world_y - a.y) < 200) takeDamage(4);
+                  }
+                  if (a.is_ore) spawnOreCluster(a.x, a.y, 4 + Math.floor(Math.random() * 4));
+                  else if (Math.random() < 0.25) spawnOreCluster(a.x, a.y, 2 + Math.floor(Math.random() * 3));
+                  Object.assign(a, createAsteroid(a.id));
+                }
               }
-              Object.assign(a, createAsteroid(a.id));
+            } else {
+              // Non-host: optimistic HP + report own hits to host
+              a.hp -= dmg;
+              recentAsteroidHp.set(Number(a.id), { hp: a.hp, t: performance.now() });
+              if (ownerIsMe) {
+                outgoingAsteroidHits.push({ id: a.id, dmg: dmg });
+                if (a.hp <= 0) recordAccountStat("asteroids", 1);
+              }
+              if (a.hp < 0) a.hp = 0;
             }
             break;
           }
         }
+        if (hitAst) { if (!l.pierce) { lasers.splice(i, 1); continue; } }
 
-        if (hitAst) {
-          if (!l.pierce) {
-            lasers.splice(i, 1);
-            continue;
-          }
-        }
-
-        if (Number(l.owner) === myId) {
+        // Ships always block projectiles (pierce only applies to asteroids)
+        {
           let hitPlayer = false;
-          for (const pid in remoteShips) {
-            const p = remoteShips[pid];
-            if (!p || !p.alive || p.hp <= 0) continue;
-            const pDSq = (l.x - p.world_x) * (l.x - p.world_x) + (l.y - p.world_y) * (l.y - p.world_y);
-            if (pDSq < (SHIP_SIZE + 6) * (SHIP_SIZE + 6)) {
-              pendingHitTarget = Number(p.id);
-              pendingHitDmg = l.dmg || 1;
+          const targetRad = SHIP_SIZE + 6;
+          if (Number(l.owner) === myId) {
+            for (const pid in remoteShips) {
+              const p = remoteShips[pid];
+              if (!p || !p.alive || p.hp <= 0) continue;
+              const pDSq = (l.x - p.world_x) * (l.x - p.world_x) + (l.y - p.world_y) * (l.y - p.world_y);
+              if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
+                queueHit(p.id, l.dmg || 1, l.is_stasis ? l.stasis_time : 0);
+                lasers.splice(i, 1);
+                hitPlayer = true;
+                if (myShip && myShip.life_leech) myShip.hp = Math.min(myShip.max_hp, myShip.hp + 1);
+                break;
+              }
+            }
+          } else if (myShip && myShip.alive && myShip.hp > 0) {
+            // Enemy shot — destroy on contact with our ship (damage arrives via network)
+            const pDSq = (l.x - myShip.world_x) * (l.x - myShip.world_x) + (l.y - myShip.world_y) * (l.y - myShip.world_y);
+            if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
               lasers.splice(i, 1);
               hitPlayer = true;
-              break;
+            }
+          }
+          // Also block when a foreign laser visually hits another remote ship
+          if (!hitPlayer && Number(l.owner) !== myId) {
+            for (const pid in remoteShips) {
+              if (Number(pid) === Number(l.owner)) continue;
+              const p = remoteShips[pid];
+              if (!p || !p.alive || p.hp <= 0) continue;
+              const pDSq = (l.x - p.world_x) * (l.x - p.world_x) + (l.y - p.world_y) * (l.y - p.world_y);
+              if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
+                lasers.splice(i, 1);
+                hitPlayer = true;
+                break;
+              }
             }
           }
           if (hitPlayer) continue;
         }
       }
 
-      for (let i = 0; i < asteroids.length; i++) {
-        const a = asteroids[i];
-        a.x += a.vx;
-        a.y += a.vy;
-        if (a.x < -WORLD_BOUND + a.r || a.x > WORLD_BOUND - a.r) a.vx *= -1;
-        if (a.y < -WORLD_BOUND + a.r || a.y > WORLD_BOUND - a.r) a.vy *= -1;
-      }
-
-      // Collect ores and gain XP & Mana
-      if (myShip.alive) {
+      if (myShip && myShip.alive) {
         const magRangeSq = myShip.magnet_range * myShip.magnet_range;
+        const pickRangeSq = 40 * 40; // was 24px — too tight vs magnet + net snap
         for (let i = ores.length - 1; i >= 0; i--) {
           const o = ores[i];
-          const dx = o.x - myShip.world_x;
-          const dy = o.y - myShip.world_y;
-          const dSq = dx * dx + dy * dy;
-
-          if (dSq < magRangeSq) {
+          const oid = Number(o.id);
+          // Already collected this id (late snapshot) — strip silently, no XP
+          if (Number.isFinite(oid) && recentCollectedIds.has(oid)) {
+            ores.splice(i, 1);
+            continue;
+          }
+          let dx = o.x - myShip.world_x;
+          let dy = o.y - myShip.world_y;
+          let dSq = dx * dx + dy * dy;
+          if (dSq < magRangeSq && dSq > 0.0001) {
             o.x += (myShip.world_x - o.x) * myShip.orb_accel;
             o.y += (myShip.world_y - o.y) * myShip.orb_accel;
+            // Recalculate AFTER pull (old code used pre-pull distance and often never collected)
+            dx = o.x - myShip.world_x;
+            dy = o.y - myShip.world_y;
+            dSq = dx * dx + dy * dy;
           }
-          if (dSq < 576) { // 24^2
+          if (dSq < pickRangeSq) {
+            if (o.is_gold) { 
+              myShip.hp = myShip.max_hp; myShip.mana += 100.0; 
+              recordAccountStat("career_xp", 100);
+            } else {
+              const xpGain = Math.floor(15 * myShip.xp_mult);
+              myShip.mana = Math.min(myShip.max_mana, myShip.mana + 20.0 * myShip.mana_mult); 
+              myShip.xp += xpGain;
+              recordAccountStat("career_xp", xpGain);
+              if (myShip.heal_on_ore) {
+                myShip.ore_counter++;
+                if (myShip.ore_counter >= 5) {
+                  myShip.hp = Math.min(myShip.max_hp, myShip.hp + 1);
+                  myShip.ore_counter = 0;
+                }
+              }
+            }
+            if (Number.isFinite(oid)) {
+              outgoingCollectedOres.push(oid);
+              recentCollectedIds.set(oid, performance.now());
+            }
             ores.splice(i, 1);
-            myShip.mana = Math.min(myShip.max_mana, myShip.mana + 20.0 * myShip.mana_mult);
-            myShip.xp += Math.floor(25 * myShip.xp_mult);
           }
         }
       }
 
-      // Host regenerates ores when depleted
+      // Host: also attract ores toward remote ships so authoritative positions move in
+      if (myId === 1) {
+        for (const o of ores) {
+          for (const pid in remoteShips) {
+            const p = remoteShips[pid];
+            if (!p || !p.alive || p.hp <= 0) continue;
+            const range = 200; // base remote magnet on host sim
+            const accel = 0.1;
+            const dx = o.x - p.world_x;
+            const dy = o.y - p.world_y;
+            const dSq = dx * dx + dy * dy;
+            if (dSq < range * range && dSq > 0.0001) {
+              o.x += (p.world_x - o.x) * accel;
+              o.y += (p.world_y - o.y) * accel;
+            }
+          }
+        }
+      }
+
       if (myId === 1) {
         oreRegenAccumulator += dt;
         if (oreRegenAccumulator >= ORE_REGEN_INTERVAL) {
@@ -1221,408 +1915,352 @@
           if (ores.length < MAX_WORLD_ORES) {
             const numSpawn = Math.min(4, MAX_WORLD_ORES - ores.length);
             for (let k = 0; k < numSpawn; k++) {
-              ores.push({
-                x: -WORLD_BOUND * 0.8 + Math.random() * (WORLD_BOUND * 1.6),
-                y: -WORLD_BOUND * 0.8 + Math.random() * (WORLD_BOUND * 1.6)
-              });
+              const inHotZone = Math.random() < 0.5; const maxRad = inHotZone ? 400 : WORLD_BOUND * 0.9;
+              const ang = Math.random() * Math.PI * 2; const dist = Math.random() * maxRad; ores.push(makeOre(Math.cos(ang) * dist, Math.sin(ang) * dist, Math.random() < 0.05));
             }
           }
         }
       }
 
-      // Throttled network packet updates (20Hz)
-      netAccumulator += dt;
+      netAccumulator += dt; 
       worldSyncAccumulator += dt;
 
       if (netAccumulator >= NET_TICK_RATE) {
         netAccumulator = 0;
-
-        const outPayload = {
-          ship: {
-            id: myShip.id,
-            world_x: Number(myShip.world_x.toFixed(1)),
-            world_y: Number(myShip.world_y.toFixed(1)),
-            angle: Math.round(myShip.angle),
-            hp: myShip.hp,
-            max_hp: myShip.max_hp,
-            alive: myShip.alive
+        if (myShip) {
+          const outPayload = { 
+            ship: { 
+              id: myShip.id, 
+              world_x: Number(myShip.world_x.toFixed(1)), 
+              world_y: Number(myShip.world_y.toFixed(1)), 
+              angle: Math.round(myShip.angle), 
+              hp: myShip.hp, 
+              max_hp: myShip.max_hp, 
+              alive: myShip.alive, 
+              xp: myShip.xp, 
+              kills: myShip.kills || 0, 
+              stasis: myShip.stasis_timer > 0, 
+              name: myShip.name 
+            } 
+          };
+          if (myId === 1) {
+            outPayload.match_config = {
+              mode: matchConfig.mode,
+              useTimer: matchConfig.useTimer,
+              useKills: matchConfig.useKills,
+              durationSec: matchConfig.durationSec,
+              killLimit: matchConfig.killLimit
+            };
+            outPayload.match_time = Number(matchTimeLeft.toFixed(1));
+            if (matchOver) {
+              outPayload.match_over = true;
+              outPayload.match_reason = statusMessage;
+            }
           }
-        };
-
-        if (outgoingLaserQueue.length > 0) {
-          outPayload.new_lasers = outgoingLaserQueue;
-          outgoingLaserQueue = [];
+          if (outgoingLaserQueue.length > 0) { 
+            outPayload.new_lasers = outgoingLaserQueue; 
+            outgoingLaserQueue = []; 
+          }
+          if (pendingHits.length > 0) {
+            outPayload.hits = pendingHits;
+            outPayload.hit_target = pendingHits[0].target;
+            outPayload.dmg = pendingHits[0].dmg;
+            if (pendingHits[0].stasis) outPayload.stasis_time = pendingHits[0].stasis;
+            pendingHits = [];
+          }
+          if (outgoingCollectedOres.length > 0) {
+            outPayload.collected_ores = outgoingCollectedOres;
+            outgoingCollectedOres = [];
+          }
+          if (outgoingAsteroidHits.length > 0) {
+            outPayload.asteroid_hits = outgoingAsteroidHits;
+            outgoingAsteroidHits = [];
+          }
+          if (myId === 1 && worldSyncAccumulator >= WORLD_SYNC_RATE) {
+            worldSyncAccumulator = 0;
+            outPayload.asteroids = asteroids.map(a => ({ id: a.id, x: Math.round(a.x), y: Math.round(a.y), vx: Number(a.vx.toFixed(2)), vy: Number(a.vy.toFixed(2)), r: a.r, hp: a.hp, max_hp: a.max_hp, is_ore: a.is_ore, is_bomb: a.is_bomb }));
+            outPayload.ores = ores.map(o => ({ id: o.id, x: Math.round(o.x), y: Math.round(o.y), is_gold: o.is_gold }));
+          }
+          sendMsg({ action: "game_packet", payload: outPayload });
         }
-
-        if (pendingHitTarget !== null) {
-          outPayload.hit_target = pendingHitTarget;
-          outPayload.dmg = pendingHitDmg;
-          pendingHitTarget = null;
-          pendingHitDmg = 0;
-        }
-
-        if (myId === 1 && worldSyncAccumulator >= WORLD_SYNC_RATE) {
-          worldSyncAccumulator = 0;
-          outPayload.asteroids = asteroids.map(a => ({
-            id: a.id,
-            x: Math.round(a.x),
-            y: Math.round(a.y),
-            vx: Number(a.vx.toFixed(2)),
-            vy: Number(a.vy.toFixed(2)),
-            r: a.r,
-            hp: a.hp,
-            max_hp: a.max_hp,
-            is_ore: a.is_ore
-          }));
-          outPayload.ores = ores.map(o => ({
-            x: Math.round(o.x),
-            y: Math.round(o.y)
-          }));
-        }
-
-        sendMsg({ action: "game_packet", payload: outPayload });
       }
-    }
-
-    function renderLobby() {
-      vctx.fillStyle = BLACK;
-      vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
-      drawStarfield(vctx, V_WIDTH, V_HEIGHT);
-
-      const cx = V_WIDTH / 2;
-
-      vctx.font = "bold 36px Consolas";
-      vctx.fillStyle = CYAN;
-      vctx.textAlign = "center";
-      vctx.fillText("A S T R A C L A S H", cx, 90);
-
-      vctx.font = "12px Consolas";
-      vctx.fillStyle = GRAY;
-      vctx.fillText("6-PLAYER ORBITAL COMBAT & UPGRADE ARENA", cx, 120);
-
-      if (menuMode === "main") {
-        const buttons = [
-          { text: "QUICK PLAY (PUBLIC)", y: 190, col: CYAN },
-          { text: "HOST PRIVATE ROOM", y: 260, col: WHITE },
-          { text: "JOIN PRIVATE ROOM", y: 330, col: WHITE }
-        ];
-
-        for (const b of buttons) {
-          const hovered = mousePos.x >= cx - 150 && mousePos.x <= cx + 150 && mousePos.y >= b.y && mousePos.y <= b.y + 48;
-          drawCard(vctx, cx - 150, b.y, 300, 48, hovered ? CYAN : b.col);
-
-          vctx.font = "bold 16px Consolas";
-          vctx.fillStyle = hovered ? CYAN : b.col;
-          vctx.fillText(b.text, cx, b.y + 30);
-        }
-      } else if (menuMode === "host_private") {
-        drawCard(vctx, cx - 170, 190, 340, 220, CYAN);
-
-        vctx.font = "bold 18px Consolas";
-        vctx.fillStyle = CYAN;
-        vctx.fillText("HOST PRIVATE ROOM (MAX 6)", cx, 225);
-
-        vctx.font = "12px Consolas";
-        vctx.fillStyle = WHITE;
-        vctx.textAlign = "left";
-        vctx.fillText("Set Password (optional):", cx - 140, 265);
-
-        vctx.fillStyle = "rgb(25, 30, 45)";
-        vctx.fillRect(cx - 140, 280, 280, 36);
-        vctx.strokeStyle = CYAN;
-        vctx.strokeRect(cx - 140, 280, 280, 36);
-
-        vctx.font = "bold 18px Consolas";
-        vctx.fillStyle = RAINBOW[3];
-        vctx.fillText(passwordInput + "|", cx - 130, 305);
-
-        drawCard(vctx, cx - 140, 340, 130, 42, RAINBOW[4]);
-        drawCard(vctx, cx + 10, 340, 130, 42, RAINBOW[1]);
-
-        vctx.textAlign = "center";
-        vctx.font = "14px Consolas";
-        vctx.fillStyle = RAINBOW[4];
-        vctx.fillText("CREATE", cx - 75, 366);
-        vctx.fillStyle = RAINBOW[1];
-        vctx.fillText("BACK", cx + 75, 366);
-      } else if (menuMode === "join_private") {
-        drawCard(vctx, cx - 170, 180, 340, 260, CYAN);
-
-        vctx.font = "bold 18px Consolas";
-        vctx.fillStyle = CYAN;
-        vctx.fillText("ENTER PRIVATE LOBBY", cx, 215);
-
-        vctx.font = "12px Consolas";
-        vctx.fillStyle = WHITE;
-        vctx.fillText("4-Letter Code:", cx - 140, 240);
-        drawCard(vctx, cx - 140, 245, 280, 34, activeInput === "code" ? RAINBOW[3] : GRAY);
-
-        vctx.font = "bold 18px Consolas";
-        vctx.fillStyle = RAINBOW[3];
-        vctx.fillText(roomCodeInput + (activeInput === "code" ? "|" : ""), cx - 130, 269);
-
-        vctx.font = "12px Consolas";
-        vctx.fillStyle = WHITE;
-        vctx.fillText("Password (if required):", cx - 140, 305);
-        drawCard(vctx, cx - 140, 310, 280, 34, activeInput === "pass" ? RAINBOW[3] : GRAY);
-
-        vctx.font = "bold 18px Consolas";
-        vctx.fillStyle = RAINBOW[3];
-        vctx.fillText(passwordInput + (activeInput === "pass" ? "|" : ""), cx - 130, 334);
-
-        drawCard(vctx, cx - 140, 365, 130, 42, RAINBOW[4]);
-        drawCard(vctx, cx + 10, 365, 130, 42, RAINBOW[1]);
-
-        vctx.textAlign = "center";
-        vctx.font = "14px Consolas";
-        vctx.fillStyle = RAINBOW[4];
-        vctx.fillText("ENTER", cx - 75, 391);
-        vctx.fillStyle = RAINBOW[1];
-        vctx.fillText("BACK", cx + 75, 391);
-      } else if (menuMode === "waiting") {
-        drawCard(vctx, cx - 180, 220, 360, 160, CYAN);
-
-        vctx.font = "bold 18px Consolas";
-        vctx.fillStyle = RAINBOW[3];
-        vctx.fillText(`ROOM CODE: ${roomCode}`, cx, 260);
-
-        vctx.font = "12px Consolas";
-        vctx.fillStyle = WHITE;
-        vctx.fillText("Waiting for pilots to connect (Max 6)...", cx, 300);
-
-        const pulse = Math.floor((performance.now() / 50) % 10);
-        vctx.strokeStyle = CYAN;
-        vctx.beginPath();
-        vctx.arc(cx, 340, 6 + pulse, 0, Math.PI * 2);
-        vctx.stroke();
-      }
-
-      vctx.textAlign = "center";
-      vctx.font = "13px Consolas";
-      vctx.fillStyle = statusColor;
-      vctx.fillText(statusMessage, cx, V_HEIGHT - 40);
     }
 
     function renderGame() {
-      const camX = myShip.world_x;
-      const camY = myShip.world_y;
-      const cx = V_WIDTH / 2;
-      const cy = V_HEIGHT / 2;
+      const currentShake = Number.isFinite(screenShake) ? screenShake : 0;
+      const shakeX = currentShake > 0 ? (Math.random() - 0.5) * currentShake : 0; 
+      const shakeY = currentShake > 0 ? (Math.random() - 0.5) * currentShake : 0;
+      
+      if (!myShip) initMyShip();
+      const camX = myShip.world_x; 
+      const camY = myShip.world_y; 
+      const cx = V_WIDTH / 2 + shakeX; 
+      const cy = V_HEIGHT / 2 + shakeY;
 
-      vctx.fillStyle = BLACK;
+      vctx.fillStyle = BLACK; 
       vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+      
+      for (let i = 0; i < stars.length; i++) {
+        const s = stars[i]; const px = ((s.x - camX * s.z) % (V_WIDTH * 2) + V_WIDTH * 2) % (V_WIDTH * 2) - V_WIDTH/2; const py = ((s.y - camY * s.z) % (V_HEIGHT * 2) + V_HEIGHT * 2) % (V_HEIGHT * 2) - V_HEIGHT/2;
+        if(px > -10 && px < V_WIDTH + 10 && py > -10 && py < V_HEIGHT + 10) { const val = Math.floor(255 * (0.2 + s.z)); vctx.fillStyle = `rgb(${val}, ${val}, ${val + 15})`; vctx.fillRect(px, py, s.z * 3, s.z * 3); }
+      }
 
-      const bLeft = Math.floor(-WORLD_BOUND - camX + cx);
-      const bRight = Math.floor(WORLD_BOUND - camX + cx);
-      const bTop = Math.floor(-WORLD_BOUND - camY + cy);
-      const bBottom = Math.floor(WORLD_BOUND - camY + cy);
+      const bLeft = Math.floor(-WORLD_BOUND - camX + cx); const bRight = Math.floor(WORLD_BOUND - camX + cx);
+      const bTop = Math.floor(-WORLD_BOUND - camY + cy); const bBottom = Math.floor(WORLD_BOUND - camY + cy);
+      vctx.strokeStyle = BORDER_COLOR; vctx.lineWidth = 3; vctx.strokeRect(bLeft, bTop, bRight - bLeft, bBottom - bTop);
+      vctx.strokeStyle = "rgb(0, 70, 110)"; vctx.lineWidth = 2; vctx.strokeRect(bLeft - 4, bTop - 4, bRight - bLeft + 8, bBottom - bTop + 8);
 
-      vctx.strokeStyle = BORDER_COLOR;
-      vctx.lineWidth = 3;
-      vctx.strokeRect(bLeft, bTop, bRight - bLeft, bBottom - bTop);
-      vctx.strokeStyle = "rgb(0, 70, 110)";
-      vctx.lineWidth = 2;
-      vctx.strokeRect(bLeft - 4, bTop - 4, bRight - bLeft + 8, bBottom - bTop + 8);
+      const hx = 0 - camX + cx; const hy = 0 - camY + cy;
+      if (hx > -400 && hx < V_WIDTH + 400 && hy > -400 && hy < V_HEIGHT + 400) { vctx.strokeStyle = "rgba(0, 180, 255, 0.15)"; vctx.lineWidth = 4; vctx.beginPath(); vctx.arc(hx, hy, 400, 0, Math.PI * 2); vctx.stroke(); }
+
+      for (const t of trails) { const tx = t.x - camX + cx; const ty = t.y - camY + cy; vctx.fillStyle = t.color; vctx.globalAlpha = Math.max(0, t.life); vctx.beginPath(); vctx.arc(tx, ty, 3, 0, Math.PI * 2); vctx.fill(); vctx.globalAlpha = 1.0; }
 
       for (let i = 0; i < asteroids.length; i++) {
-        const a = asteroids[i];
-        const ax = a.x - camX + cx;
-        const ay = a.y - camY + cy;
-
+        const a = asteroids[i]; const ax = a.x - camX + cx; const ay = a.y - camY + cy;
         if (ax >= -60 && ax <= V_WIDTH + 60 && ay >= -60 && ay <= V_HEIGHT + 60) {
-          vctx.fillStyle = a.is_ore ? ORE_ASTEROID_COLOR : ASTEROID_COLOR;
-          vctx.beginPath();
-          vctx.arc(ax, ay, a.r, 0, Math.PI * 2);
-          vctx.fill();
-
-          vctx.strokeStyle = a.is_ore ? ORE_BLUE : "rgb(85, 80, 95)";
-          vctx.lineWidth = a.is_ore ? 3 : 2;
-          vctx.stroke();
-
-          if (a.is_ore) {
-            vctx.fillStyle = ORE_BLUE;
-            vctx.beginPath();
-            vctx.arc(ax, ay, a.r * 0.35, 0, Math.PI * 2);
-            vctx.fill();
-            vctx.fillStyle = WHITE;
-            vctx.beginPath();
-            vctx.arc(ax, ay, a.r * 0.15, 0, Math.PI * 2);
-            vctx.fill();
-          }
-
-          const barW = Math.floor(a.r * 1.5);
-          const barH = 4;
-          const bx = Math.floor(ax - barW / 2);
-          const by = Math.floor(ay - a.r - 10);
-          vctx.fillStyle = DARK_GRAY;
-          vctx.fillRect(bx, by, barW, barH);
-          const hpPct = Math.max(0.0, a.hp / (a.max_hp || 4));
-          vctx.fillStyle = RAINBOW[4];
-          vctx.fillRect(bx, by, Math.floor(barW * hpPct), barH);
+          vctx.fillStyle = a.is_ore ? ORE_ASTEROID_COLOR : (a.is_bomb ? BOMB_ASTEROID_COLOR : ASTEROID_COLOR); vctx.beginPath(); vctx.arc(ax, ay, a.r, 0, Math.PI * 2); vctx.fill();
+          vctx.strokeStyle = a.is_ore ? ORE_BLUE : "rgb(85, 80, 95)"; vctx.lineWidth = a.is_ore ? 3 : 2; vctx.stroke();
+          if (a.is_ore) { vctx.fillStyle = ORE_BLUE; vctx.beginPath(); vctx.arc(ax, ay, a.r * 0.35, 0, Math.PI * 2); vctx.fill(); vctx.fillStyle = WHITE; vctx.beginPath(); vctx.arc(ax, ay, a.r * 0.15, 0, Math.PI * 2); vctx.fill(); } 
+          else if (a.is_bomb) { const glow = Math.abs(Math.sin(performance.now() / 200)); vctx.fillStyle = `rgba(255, 100, 100, ${glow})`; vctx.beginPath(); vctx.arc(ax, ay, a.r * 0.5, 0, Math.PI * 2); vctx.fill(); }
+          const barW = Math.floor(a.r * 1.5); const barH = 4; const bx = Math.floor(ax - barW / 2); const by = Math.floor(ay - a.r - 10);
+          vctx.fillStyle = DARK_GRAY; vctx.fillRect(bx, by, barW, barH); const hpPct = Math.max(0.0, a.hp / (a.max_hp || 4)); vctx.fillStyle = RAINBOW[4]; vctx.fillRect(bx, by, Math.floor(barW * hpPct), barH);
         }
       }
 
       const pulse = Math.floor((performance.now() / 150) % 3);
       for (let i = 0; i < ores.length; i++) {
-        const o = ores[i];
-        const ox = o.x - camX + cx;
-        const oy = o.y - camY + cy;
-
+        const o = ores[i]; const ox = o.x - camX + cx; const oy = o.y - camY + cy;
         if (ox >= -20 && ox <= V_WIDTH + 20 && oy >= -20 && oy <= V_HEIGHT + 20) {
-          vctx.strokeStyle = "rgb(0, 100, 180)";
-          vctx.lineWidth = 1;
-          vctx.beginPath();
-          vctx.arc(ox, oy, 6 + pulse, 0, Math.PI * 2);
-          vctx.stroke();
-
-          vctx.fillStyle = ORE_BLUE;
-          vctx.beginPath();
-          vctx.arc(ox, oy, 4, 0, Math.PI * 2);
-          vctx.fill();
-
-          vctx.fillStyle = WHITE;
-          vctx.beginPath();
-          vctx.arc(ox, oy, 2, 0, Math.PI * 2);
-          vctx.fill();
+          vctx.strokeStyle = o.is_gold ? "rgb(200, 150, 0)" : "rgb(0, 100, 180)"; vctx.lineWidth = 1;
+          vctx.beginPath(); vctx.arc(ox, oy, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
+          vctx.fillStyle = o.is_gold ? ORE_GOLD : ORE_BLUE; vctx.beginPath(); vctx.arc(ox, oy, 4, 0, Math.PI * 2); vctx.fill();
+          vctx.fillStyle = WHITE; vctx.beginPath(); vctx.arc(ox, oy, 2, 0, Math.PI * 2); vctx.fill();
         }
       }
 
       for (let i = 0; i < lasers.length; i++) {
-        const l = lasers[i];
-        if (!l) continue;
-        const lx = l.x - camX + cx;
-        const ly = l.y - camY + cy;
-        const rad = (l.angle * Math.PI) / 180;
-        const lColor = RAINBOW[Number(l.owner)] || "rgb(255, 50, 50)";
-
-        if (l.is_missile) {
-          vctx.fillStyle = lColor;
-          vctx.strokeStyle = WHITE;
-          vctx.lineWidth = 1.5;
-          vctx.beginPath();
-          vctx.arc(lx, ly, 4.5, 0, Math.PI * 2);
-          vctx.fill();
-          vctx.stroke();
-
-          vctx.strokeStyle = "rgb(255, 170, 40)";
-          vctx.lineWidth = 2;
-          vctx.beginPath();
-          vctx.moveTo(lx, ly);
-          vctx.lineTo(lx - 12 * Math.cos(rad), ly + 12 * Math.sin(rad));
-          vctx.stroke();
-        } else {
-          vctx.strokeStyle = lColor;
-          vctx.lineWidth = 3;
-          vctx.beginPath();
-          vctx.moveTo(lx, ly);
-          vctx.lineTo(lx + 15 * Math.cos(rad), ly - 15 * Math.sin(rad));
-          vctx.stroke();
-        }
+        const l = lasers[i]; if (!l) continue;
+        const lx = l.x - camX + cx; const ly = l.y - camY + cy; const rad = (l.angle * Math.PI) / 180; const lColor = RAINBOW[Number(l.owner)] || "rgb(255, 50, 50)";
+        if (l.is_stasis) { vctx.fillStyle = `rgba(0, 255, 255, 0.4)`; vctx.strokeStyle = `rgb(0, 255, 255)`; vctx.lineWidth = 2; vctx.beginPath(); vctx.arc(lx, ly, l.size, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); } 
+        else if (l.is_mine) { vctx.fillStyle = lColor; vctx.strokeStyle = "rgb(255, 50, 50)"; vctx.lineWidth = 2; vctx.beginPath(); vctx.arc(lx, ly, 6 + Math.sin(performance.now() / 150) * 3, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); } 
+        else if (l.is_missile) { vctx.fillStyle = lColor; vctx.strokeStyle = WHITE; vctx.lineWidth = 1.5; vctx.beginPath(); vctx.arc(lx, ly, 4.5, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); vctx.strokeStyle = "rgb(255, 170, 40)"; vctx.lineWidth = 2; vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx - 12 * Math.cos(rad), ly + 12 * Math.sin(rad)); vctx.stroke(); } 
+        else { vctx.strokeStyle = lColor; vctx.lineWidth = 3; vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx + 15 * Math.cos(rad), ly - 15 * Math.sin(rad)); vctx.stroke(); }
       }
+
+      for (const p of particles) { const px = p.x - camX + cx; const py = p.y - camY + cy; vctx.fillStyle = p.color; vctx.globalAlpha = Math.max(0, p.life); vctx.fillRect(px, py, p.size, p.size); }
+      vctx.globalAlpha = 1.0;
 
       for (const pid in remoteShips) {
-        const p = remoteShips[pid];
-        if (!p || !p.alive || p.hp <= 0) continue;
-        const ox = p.world_x - camX + cx;
-        const oy = p.world_y - camY + cy;
-        const rCol = RAINBOW[Number(p.id)] || RAINBOW[2];
+        const p = remoteShips[pid]; if (!p) continue;
+        const ox = p.world_x - camX + cx; const oy = p.world_y - camY + cy; const rCol = RAINBOW[Number(p.id)] || RAINBOW[2];
 
-        if (ox >= 0 && ox <= V_WIDTH && oy >= 0 && oy <= V_HEIGHT) {
-          const pts = getRotatedPoints(ox, oy, p.angle, SHIP_SIZE);
-          vctx.strokeStyle = rCol;
-          vctx.lineWidth = 3;
-          drawPolygon(vctx, pts, false, true);
+        if (ox >= -50 && ox <= V_WIDTH + 50 && oy >= -50 && oy <= V_HEIGHT + 50) {
+          drawDirectShip(vctx, ox, oy, p.angle, rCol, !p.alive || p.hp <= 0);
 
-          vctx.fillStyle = "rgb(255, 50, 50)";
-          vctx.fillRect(ox - 17, oy - 28, 34, 5);
-          const pct = Math.max(0.0, p.hp / (p.max_hp || 6));
-          vctx.fillStyle = RAINBOW[4];
-          vctx.fillRect(ox - 17, oy - 28, Math.floor(34 * pct), 5);
-        } else {
-          drawOffscreenMarker(vctx, camX, camY, p.world_x, p.world_y, rCol);
-        }
-      }
-
-      if (myShip.alive && myShip.hp > 0) {
-        const pts = getRotatedPoints(cx, cy, myShip.angle, SHIP_SIZE);
-        vctx.strokeStyle = myShip.color;
-        vctx.lineWidth = 3;
-        drawPolygon(vctx, pts, false, true);
-
-        if (myShip.autopilot_active) {
-          vctx.strokeStyle = CYAN;
-          vctx.lineWidth = 1;
-          vctx.beginPath();
-          vctx.arc(cx, cy, SHIP_SIZE + 6, 0, Math.PI * 2);
-          vctx.stroke();
-        }
-
-        vctx.fillStyle = "rgb(255, 50, 50)";
-        vctx.fillRect(cx - 17, cy - 28, 34, 5);
-        const hpPct = Math.max(0.0, myShip.hp / myShip.max_hp);
-        vctx.fillStyle = RAINBOW[4];
-        vctx.fillRect(cx - 17, cy - 28, Math.floor(34 * hpPct), 5);
-      } else {
-        vctx.font = "bold 28px Consolas";
-        vctx.fillStyle = RAINBOW[1];
-        vctx.textAlign = "center";
-        vctx.fillText("HULL DESTROYED", cx, cy - 15);
-        vctx.font = "18px Consolas";
-        vctx.fillStyle = WHITE;
-        vctx.fillText(`RESPAWNING IN ${Math.max(1, Math.ceil(myShip.respawn_timer))}s`, cx, cy + 20);
-      }
-
-      const bm = 20;
-      const by = 18;
-      const bw = V_WIDTH - 40;
-      const bh = 14;
-
-      vctx.fillStyle = XP_BG;
-      vctx.fillRect(bm, by, bw, bh);
-      const prog = Math.min(1.0, myShip.xp / TIER_XP_THRESHOLDS[TIER_XP_THRESHOLDS.length - 1]);
-      vctx.fillStyle = XP_BLUE;
-      vctx.fillRect(bm, by, Math.floor(bw * prog), bh);
-      vctx.strokeStyle = GRAY;
-      vctx.lineWidth = 2;
-      vctx.strokeRect(bm, by, bw, bh);
-
-      const manaPct = myShip.mana / myShip.max_mana;
-      vctx.fillStyle = XP_BG;
-      vctx.fillRect(20, 42, 140, 8);
-      vctx.fillStyle = CYAN;
-      vctx.fillRect(20, 42, Math.floor(140 * manaPct), 8);
-
-      const apLabel = !myShip.has_autopilot ? "LOCKED" : (myShip.autopilot_active ? "ACTIVE" : "STANDBY");
-      vctx.font = "11px Consolas";
-      vctx.textAlign = "left";
-      vctx.fillStyle = myShip.autopilot_active ? CYAN : WHITE;
-      vctx.fillText(`AUTOPILOT (E): ${apLabel}`, 20, 62);
-
-      vctx.font = "12px Consolas";
-      vctx.fillStyle = myShip.color;
-      vctx.fillText(`PILOT ${myId}/6`, V_WIDTH - 245, 52);
-
-      const nextReq = TIER_XP_THRESHOLDS[Math.min(5, myShip.tier + 1)];
-      vctx.fillStyle = RAINBOW[3];
-      vctx.fillText(`TIER ${myShip.tier}/5  XP: ${myShip.xp}/${nextReq}`, V_WIDTH - 150, 52);
-
-      if (myShip.alive && myShip.hp > 0) {
-        const currentNode = myShip.current_node;
-        const options = UPGRADE_TREE[currentNode]?.children || [];
-        const nextTier = myShip.tier + 1;
-
-        if (options.length > 0 && nextTier < TIER_XP_THRESHOLDS.length && myShip.xp >= TIER_XP_THRESHOLDS[nextTier]) {
-          drawCard(vctx, V_WIDTH / 2 - 275, 38, 550, 46, RAINBOW[4]);
-
-          for (let i = 0; i < Math.min(options.length, 3); i++) {
-            const optKey = options[i];
-            const optData = UPGRADE_TREE[optKey];
-            const txtStr = `[${i + 1}] ${optData.name}: ${optData.desc}`;
-            vctx.font = "bold 11px Consolas";
-            vctx.fillStyle = i === 0 ? WHITE : (i === 1 ? RAINBOW[3] : CYAN);
-            vctx.fillText(txtStr, V_WIDTH / 2 - 265, 50 + i * 13);
+          if (p.stasis) { 
+            vctx.fillStyle = `rgba(200, 200, 255, 0.4)`; vctx.strokeStyle = `rgb(255, 255, 255)`; vctx.beginPath(); 
+            vctx.arc(ox, oy, SHIP_SIZE + 15, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); 
+          }
+          vctx.font = "bold 10px Consolas";
+          vctx.fillStyle = isTeamMode() ? (TEAM_COLORS[getTeam(p.id)] || WHITE) : WHITE;
+          vctx.textAlign = "center"; vctx.fillText(p.name, ox, oy - 38);
+          vctx.fillStyle = "rgb(255, 50, 50)"; vctx.fillRect(ox - 17, oy - 28, 34, 5); 
+          const pct = Math.max(0.0, Math.min(1.0, p.hp / (p.max_hp || 6))); vctx.fillStyle = RAINBOW[4]; vctx.fillRect(ox - 17, oy - 28, Math.floor(34 * pct), 5);
+        } else { 
+          const dx = p.world_x - camX; const dy = p.world_y - camY;
+          if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+            const pad = 26;
+            const s = Math.min((V_WIDTH / 2 - pad) / Math.abs(dx || 0.001), (V_HEIGHT / 2 - pad) / Math.abs(dy || 0.001));
+            if (Number.isFinite(s)) {
+              const ex = V_WIDTH / 2 + dx * s; const ey = V_HEIGHT / 2 + dy * s;
+              const arrowAng = Math.atan2(dy, dx);
+              vctx.save();
+              vctx.translate(ex, ey);
+              vctx.rotate(arrowAng);
+              // Triangle arrow pointing toward the off-screen ship
+              vctx.beginPath();
+              vctx.moveTo(11, 0);
+              vctx.lineTo(-7, -8);
+              vctx.lineTo(-3, 0);
+              vctx.lineTo(-7, 8);
+              vctx.closePath();
+              vctx.fillStyle = rCol;
+              vctx.strokeStyle = WHITE;
+              vctx.lineWidth = 1.5;
+              vctx.fill();
+              vctx.stroke();
+              vctx.rotate(-arrowAng);
+              vctx.font = "bold 9px Consolas";
+              vctx.fillStyle = WHITE;
+              vctx.textAlign = "center";
+              vctx.fillText(p.name, 0, -14);
+              vctx.restore();
+            }
           }
         }
+      }
+
+      const isDead = !myShip.alive || myShip.hp <= 0;
+      drawDirectShip(vctx, cx, cy, myShip.angle, myShip.color, isDead);
+
+      if (myShip.is_charging_shield) {
+        const charge = myShip.shield_charge || 0;
+        const chargeRad = 18 + charge * 28;
+        // Outer soft glow
+        vctx.fillStyle = `rgba(0, 200, 255, ${0.12 + charge * 0.08})`;
+        vctx.beginPath();
+        vctx.arc(cx, cy, chargeRad + 6, 0, Math.PI * 2);
+        vctx.fill();
+        // Main force field bubble around the ship
+        vctx.fillStyle = `rgba(0, 255, 255, ${0.18 + charge * 0.1})`;
+        vctx.strokeStyle = `rgb(0, 255, 255)`;
+        vctx.lineWidth = 2 + charge * 0.6;
+        vctx.beginPath();
+        vctx.arc(cx, cy, chargeRad, 0, Math.PI * 2);
+        vctx.fill();
+        vctx.stroke();
+        // Inner ring
+        vctx.strokeStyle = `rgba(180, 255, 255, 0.7)`;
+        vctx.lineWidth = 1;
+        vctx.beginPath();
+        vctx.arc(cx, cy, Math.max(12, chargeRad * 0.55), 0, Math.PI * 2);
+        vctx.stroke();
+      }
+
+      if (myShip.stasis_timer > 0) {
+        vctx.fillStyle = `rgba(200, 200, 255, 0.4)`; vctx.strokeStyle = `rgb(255, 255, 255)`;
+        vctx.beginPath(); vctx.arc(cx, cy, SHIP_SIZE + 15, 0, Math.PI * 2); vctx.fill(); vctx.stroke();
+        vctx.fillStyle = WHITE; vctx.textAlign = "center"; vctx.font = "bold 14px Consolas"; vctx.fillText("STASIS", cx, cy - 40);
+      }
+
+      vctx.font = "bold 10px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center"; vctx.fillText(myShip.name, cx, cy - 38);
+      vctx.fillStyle = "rgb(255, 50, 50)"; vctx.fillRect(cx - 17, cy - 28, 34, 5); 
+      const hpPct = Math.max(0.0, Math.min(1.0, myShip.hp / myShip.max_hp)); 
+      vctx.fillStyle = RAINBOW[4]; vctx.fillRect(cx - 17, cy - 28, Math.floor(34 * hpPct), 5);
+
+      if (isDead) {
+        vctx.font = "bold 28px Consolas"; vctx.fillStyle = RAINBOW[1]; vctx.textAlign = "center"; vctx.fillText("HULL DESTROYED", cx, cy - 15);
+        vctx.font = "18px Consolas"; vctx.fillStyle = WHITE; vctx.fillText(`RESPAWNING IN ${Math.max(1, Math.ceil(myShip.respawn_timer))}s`, cx, cy + 20);
+      }
+
+      {
+        const board = isTeamMode() ? getMatchStandings() : (
+          [{ name: myShip.name, kills: myShip.kills || 0 }].concat(Object.values(remoteShips).map(p => ({ name: p.name, kills: p.kills || 0 }))).sort((a, b) => b.kills - a.kills)
+        );
+        vctx.fillStyle = "rgba(10, 10, 20, 0.7)";
+        vctx.fillRect(V_WIDTH - 170, 80, 160, 25 + board.length * 20);
+        vctx.font = "bold 12px Consolas"; vctx.textAlign = "left"; vctx.fillStyle = CYAN;
+        vctx.fillText(isTeamMode() ? "TEAMS" : "LEADERBOARD", V_WIDTH - 160, 95);
+        for (let i = 0; i < board.length; i++) {
+          const k = board[i].kills || 0;
+          if (isTeamMode()) {
+            vctx.fillStyle = TEAM_COLORS[board[i].team] || WHITE;
+            vctx.fillText(`#${i+1} ${board[i].name} - ${k}`, V_WIDTH - 160, 115 + i * 20);
+          } else {
+            vctx.fillStyle = WHITE;
+            vctx.fillText(`#${i+1} ${board[i].name} - ${k} kill${k === 1 ? "" : "s"}`, V_WIDTH - 160, 115 + i * 20);
+          }
+        }
+      }
+
+      // Match timer (center-top under XP bar)
+      const mt = Math.max(0, matchTimeLeft);
+      const mins = Math.floor(mt / 60);
+      const secs = Math.floor(mt % 60);
+      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+      vctx.font = "bold 16px Consolas";
+      vctx.textAlign = "center";
+      vctx.fillStyle = mt <= 30 ? RAINBOW[1] : (mt <= 60 ? RAINBOW[3] : WHITE);
+      vctx.fillText(timeStr, V_WIDTH / 2, 70);
+      vctx.font = "10px Consolas";
+      vctx.fillStyle = GRAY;
+      let ruleBits = [];
+      if (matchConfig.mode === "teams_3v3") ruleBits.push("3v3");
+      else if (matchConfig.mode === "teams_2v2v2") ruleBits.push("2v2v2");
+      else ruleBits.push("FFA");
+      if (matchConfig.useKills) ruleBits.push(matchConfig.killLimit > 0 ? `TO ${matchConfig.killLimit}` : "KILLS OPEN");
+      if (matchConfig.useTimer) ruleBits.push("TIMED");
+      vctx.fillText(ruleBits.join("  ·  "), V_WIDTH / 2, 84);
+
+      const bm = 20; const by = 18; const bw = V_WIDTH - 40; const bh = 14; vctx.fillStyle = XP_BG; vctx.fillRect(bm, by, bw, bh);
+      // Fill relative to current tier → next upgrade (not total max XP)
+      const tierIdx = Math.max(0, Math.min(myShip.tier, TIER_XP_THRESHOLDS.length - 1));
+      const xpFloor = TIER_XP_THRESHOLDS[tierIdx] || 0;
+      const xpCeil = TIER_XP_THRESHOLDS[Math.min(tierIdx + 1, TIER_XP_THRESHOLDS.length - 1)] || xpFloor;
+      let prog = 1.0;
+      if (xpCeil > xpFloor) prog = Math.min(1.0, Math.max(0, (myShip.xp - xpFloor) / (xpCeil - xpFloor)));
+      if (myShip.tier >= TIER_XP_THRESHOLDS.length - 1) prog = 1.0;
+      vctx.fillStyle = XP_BLUE; vctx.fillRect(bm, by, Math.floor(bw * prog), bh);
+      vctx.strokeStyle = GRAY; vctx.lineWidth = 2; vctx.strokeRect(bm, by, bw, bh);
+
+      const manaPct = myShip.mana / myShip.max_mana;
+      vctx.fillStyle = XP_BG; vctx.fillRect(20, 42, 140, 8);
+      vctx.fillStyle = CYAN; vctx.fillRect(20, 42, Math.floor(140 * manaPct), 8);
+
+      // Force field strength bar (blue) — only when you have the upgrade / are charging
+      if (myShip.has_stasis_field) {
+        const fieldPct = Math.min(1, (myShip.shield_charge || 0) / 3.0);
+        vctx.fillStyle = XP_BG;
+        vctx.fillRect(20, 54, 140, 8);
+        vctx.fillStyle = fieldPct > 0 ? "rgb(40, 180, 255)" : "rgb(30, 50, 70)";
+        vctx.fillRect(20, 54, Math.floor(140 * fieldPct), 8);
+        vctx.strokeStyle = "rgba(0, 180, 255, 0.6)";
+        vctx.lineWidth = 1;
+        vctx.strokeRect(20, 54, 140, 8);
+      }
+
+      let apLabel = "LOCKED";
+      if (myShip.can_dash) apLabel = myShip.dash_cooldown <= 0 && myShip.mana >= 40 ? "PHASE DASH READY" : "RECHARGING";
+      else if (myShip.has_stasis_field) {
+        apLabel = myShip.is_charging_shield ? "E AGAIN TO LAUNCH" : "PRESS E FOR FIELD";
+      } else apLabel = "PASSIVE ONLY";
+      vctx.font = "11px Consolas"; vctx.textAlign = "left";
+      const abilY = myShip.has_stasis_field ? 74 : 62;
+      vctx.fillStyle = (myShip.can_dash && myShip.dash_cooldown <= 0) || myShip.has_stasis_field ? CYAN : WHITE;
+      vctx.fillText(`ABILITY (E): ${apLabel}`, 20, abilY);
+
+      if (!matchOver && myShip.alive && myShip.hp > 0) {
+        const currentNode = myShip.current_node; const options = UPGRADE_TREE[currentNode]?.children || []; const nextTier = myShip.tier + 1;
+        if (options.length > 0 && nextTier < TIER_XP_THRESHOLDS.length && myShip.xp >= TIER_XP_THRESHOLDS[nextTier]) {
+          drawCard(vctx, V_WIDTH / 2 - 275, 38, 550, 46, RAINBOW[4]);
+          for (let i = 0; i < Math.min(options.length, 3); i++) {
+            const optKey = options[i]; const optData = UPGRADE_TREE[optKey]; vctx.font = "bold 11px Consolas"; vctx.fillStyle = i === 0 ? WHITE : (i === 1 ? RAINBOW[3] : CYAN);
+            vctx.fillText(`[${i + 1}] ${optData.name}: ${optData.desc}`, V_WIDTH / 2 - 265, 50 + i * 13);
+          }
+        }
+      }
+
+      // Match results overlay
+      if (matchOver) {
+        vctx.fillStyle = "rgba(5, 8, 18, 0.82)";
+        vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+        drawCard(vctx, V_WIDTH / 2 - 220, 120, 440, 320, CYAN);
+        vctx.textAlign = "center";
+        vctx.font = "bold 28px Consolas";
+        vctx.fillStyle = CYAN;
+        vctx.fillText("MATCH COMPLETE", V_WIDTH / 2, 165);
+        vctx.font = "bold 18px Consolas";
+        vctx.fillStyle = RAINBOW[3];
+        vctx.fillText(`WINNER: ${matchWinnerName || "—"}`, V_WIDTH / 2, 200);
+        const board = matchResults || getMatchStandings();
+        vctx.font = "14px Consolas";
+        vctx.textAlign = "left";
+        for (let i = 0; i < Math.min(board.length, 6); i++) {
+          const k = board[i].kills || 0;
+          if (isTeamMode()) {
+            vctx.fillStyle = TEAM_COLORS[board[i].team] || WHITE;
+            vctx.fillText(`${i + 1}. ${board[i].name}`, V_WIDTH / 2 - 160, 240 + i * 24);
+            vctx.fillText(`${k} kills`, V_WIDTH / 2 + 80, 240 + i * 24);
+          } else {
+            vctx.fillStyle = i === 0 ? RAINBOW[4] : WHITE;
+            vctx.fillText(`${i + 1}. ${board[i].name}`, V_WIDTH / 2 - 160, 240 + i * 24);
+            vctx.fillText(`${k} kill${k === 1 ? "" : "s"}`, V_WIDTH / 2 + 80, 240 + i * 24);
+          }
+        }
+        vctx.textAlign = "center";
+        vctx.font = "12px Consolas";
+        vctx.fillStyle = GRAY;
+        vctx.fillText("PRESS SPACE / ENTER — RETURN TO HANGAR", V_WIDTH / 2, 410);
       }
     }
   </script>
