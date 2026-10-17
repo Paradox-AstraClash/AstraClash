@@ -2300,10 +2300,11 @@
       const mt = Math.max(0, matchTimeLeft);
       const mins = Math.floor(mt / 60);
       const secs = Math.floor(mt % 60);
-      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
-      vctx.font = "bold 16px Consolas";
+      const hasTimer = matchConfig.useTimer;
+      const timeStr = hasTimer ? `${mins}:${secs.toString().padStart(2, "0")}` : "\u221E";
+      vctx.font = hasTimer ? "bold 16px Consolas" : "bold 20px Consolas";
       vctx.textAlign = "center";
-      vctx.fillStyle = mt <= 30 ? RAINBOW[1] : (mt <= 60 ? RAINBOW[3] : WHITE);
+      vctx.fillStyle = !hasTimer ? WHITE : (mt <= 30 ? RAINBOW[1] : (mt <= 60 ? RAINBOW[3] : WHITE));
       vctx.fillText(timeStr, V_WIDTH / 2, 70);
       vctx.font = "10px Consolas";
       vctx.fillStyle = GRAY;
