@@ -2343,15 +2343,11 @@
         vctx.strokeStyle = GRAY;
         vctx.lineWidth = 2;
         vctx.strokeRect(bm, by, bw, bh);
-        // Small mana bar only before max tier
-        const manaPct = myShip.mana / myShip.max_mana;
-        vctx.fillStyle = XP_BG; vctx.fillRect(20, 42, 140, 8);
-        vctx.fillStyle = CYAN; vctx.fillRect(20, 42, Math.floor(140 * manaPct), 8);
       }
 
       // Force field strength bar
       if (myShip.has_stasis_field) {
-        const fieldY = atMaxTier ? 42 : 54;
+        const fieldY = 42;
         const fieldPct = Math.min(1, (myShip.shield_charge || 0) / 3.0);
         vctx.fillStyle = XP_BG;
         vctx.fillRect(20, fieldY, 140, 8);
@@ -2368,10 +2364,7 @@
         apLabel = myShip.is_charging_shield ? "E AGAIN TO LAUNCH" : "PRESS E FOR FIELD";
       } else apLabel = "PASSIVE ONLY";
       vctx.font = "11px Consolas"; vctx.textAlign = "left";
-      let abilY = 62;
-      if (atMaxTier && myShip.has_stasis_field) abilY = 62;
-      else if (myShip.has_stasis_field) abilY = 74;
-      else if (atMaxTier) abilY = 50;
+      const abilY = myShip.has_stasis_field ? 62 : 50;
       vctx.fillStyle = (myShip.can_dash && myShip.dash_cooldown <= 0) || myShip.has_stasis_field ? CYAN : WHITE;
       vctx.fillText(`ABILITY (E): ${apLabel}`, 20, abilY);
 
