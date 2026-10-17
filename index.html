@@ -247,6 +247,92 @@
       "Private match timer max is 20 minutes. Kill limit 0 means unlimited."
     ];
 
+    // --- Lightweight Web Audio SFX (no external files) ---
+    let audioCtx = null;
+    let sfxMuted = false;
+    function ensureAudio() {
+      if (sfxMuted) return null;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        return audioCtx;
+      } catch (e) { return null; }
+    }
+    function playTone(freq, dur, type, vol, slideTo) {
+      const ctx = ensureAudio(); if (!ctx) return;
+      const t0 = ctx.currentTime;
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = type || "square";
+      o.frequency.setValueAtTime(freq, t0);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
+      g.gain.setValueAtTime(vol || 0.06, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t0); o.stop(t0 + dur + 0.02);
+    }
+    const SFX = {
+      shoot() { playTone(420, 0.06, "square", 0.04, 180); },
+      hit() { playTone(160, 0.1, "sawtooth", 0.07, 60); },
+      explode() { playTone(90, 0.35, "sawtooth", 0.1, 30); playTone(50, 0.4, "triangle", 0.06, 20); },
+      ore() { playTone(660, 0.08, "sine", 0.05, 990); },
+      upgrade() { playTone(520, 0.08, "triangle", 0.06); setTimeout(() => playTone(780, 0.12, "triangle", 0.06), 70); },
+      matchEnd() { playTone(330, 0.15, "triangle", 0.07); setTimeout(() => playTone(440, 0.2, "triangle", 0.07), 120); setTimeout(() => playTone(550, 0.35, "triangle", 0.08), 260); },
+      dash() { playTone(200, 0.15, "sine", 0.05, 80); },
+      shield() { playTone(300, 0.12, "sine", 0.04, 500); },
+      flare() { playTone(100, 0.5, "sawtooth", 0.08, 40); }
+    };
+    // Unlock audio on first user gesture
+    ["pointerdown", "keydown", "touchstart"].forEach(ev => {
+      window.addEventListener(ev, () => ensureAudio(), { once: true, passive: true });
+    });
+
+    // --- Kill feed ---
+    const killFeed = []; // { text, life }
+    function pushKillFeed(text) {
+      killFeed.unshift({ text: String(text), life: 4.0 });
+      if (killFeed.length > 6) killFeed.pop();
+    }
+
+    // Floating hit markers / damage numbers in world space
+    const floatTexts = []; // { x, y, text, life, color, vy }
+    function spawnFloatText(x, y, text, color) {
+      floatTexts.push({
+        x: x + (Math.random() * 16 - 8),
+        y: y - 10,
+        text: String(text),
+        life: 0.9,
+        color: color || "rgb(255, 220, 80)",
+        vy: -28 - Math.random() * 12
+      });
+      if (floatTexts.length > 40) floatTexts.shift();
+    }
+
+    // Per-match personal stats
+    let matchStats = { damageDealt: 0, damageTaken: 0, oreMined: 0, timeAlive: 0, kills: 0 };
+    function resetMatchStats() {
+      matchStats = { damageDealt: 0, damageTaken: 0, oreMined: 0, timeAlive: 0, kills: 0 };
+    }
+
+    // --- World events (solar flare) ---
+    let worldEvent = null; // { type, timeLeft, duration }
+    let worldEventCooldown = 70; // seconds until first possible flare
+
+    // --- Host migration: lowest connected id is host ---
+    function getHostId() {
+      let host = Number(myId) || 1;
+      for (const pid in remoteShips) {
+        const id = Number(pid);
+        if (Number.isFinite(id) && id < host) host = id;
+      }
+      return host;
+    }
+    function isHost() { return (Number(myId) || 1) === getHostId(); }
+
+    // --- Rejoin last room ---
+    let lastRoomCode = sessionStorage.getItem("astraclash_last_room") || "";
+    let lastRoomPass = sessionStorage.getItem("astraclash_last_pass") || "";
+
     const stars = [];
     for (let i = 0; i < 40; i++) { stars.push({ x: Math.random() * V_WIDTH * 2, y: Math.random() * V_HEIGHT * 2, z: 0.1 + Math.random() * 0.5 }); }
 
@@ -383,9 +469,11 @@
     }
 
     function takeDamage(dmg) {
-      if (!myShip || !myShip.alive || myShip.hp <= 0 || myShip.stasis_timer > 0) return; 
+      if (!myShip || !myShip.alive || myShip.hp <= 0 || myShip.stasis_timer > 0) return;
+      if ((myShip.invuln_timer || 0) > 0) return;
       screenShake = Math.min((Number.isFinite(screenShake) ? screenShake : 0) + 5, 20); 
       let amount = Number(dmg) || 1;
+      try { SFX.hit(); } catch (e) {}
       // Active force field absorbs hits until it breaks
       if (myShip.is_charging_shield && (myShip.shield_charge || 0) > 0) {
         const absorb = Math.min(amount, myShip.shield_charge);
@@ -397,6 +485,10 @@
           spawnParticles(myShip.world_x, myShip.world_y, CYAN, 10);
         }
         if (amount <= 0) return;
+      }
+      if (amount > 0) {
+        matchStats.damageTaken += amount;
+        spawnFloatText(myShip.world_x, myShip.world_y, `-${Math.round(amount)}`, "rgb(255, 90, 90)");
       }
       myShip.hp = Math.max(0, (Number.isFinite(myShip.hp) ? myShip.hp : 6) - amount);
       if (myShip.hp <= 0) wipeShipOnDeath();
@@ -415,7 +507,13 @@
           initMyShip(); 
           if (pendingJoin) { pendingJoin = false; setLobbyState(false); }
         }
-        if (msg.room_code !== undefined) roomCode = msg.room_code;
+        if (msg.room_code !== undefined) {
+          roomCode = msg.room_code;
+          if (roomCode) {
+            lastRoomCode = String(roomCode);
+            sessionStorage.setItem("astraclash_last_room", lastRoomCode);
+          }
+        }
 
         if (msg.rooms !== undefined) {
           const rooms = msg.rooms;
@@ -442,15 +540,31 @@
         if (!payload) return;
 
         // Host-authoritative match config / clock / end state
-        if (payload.match_config && myId !== 1) {
+        if (payload.match_config && !isHost()) {
           applyMatchConfig(payload.match_config);
         }
-        if (payload.match_time !== undefined && myId !== 1) {
+        if (payload.match_time !== undefined && !isHost()) {
           const t = Number(payload.match_time);
           if (Number.isFinite(t)) matchTimeLeft = t;
         }
         if (payload.match_over && !matchOver) {
           finishMatch(payload.match_reason || "Match complete.");
+        }
+        if (!isHost() && payload.world_event !== undefined) {
+          if (payload.world_event && payload.world_event.type) {
+            const was = worldEvent && worldEvent.type;
+            worldEvent = {
+              type: payload.world_event.type,
+              timeLeft: Number(payload.world_event.timeLeft) || 0,
+              duration: Number(payload.world_event.duration) || 10
+            };
+            if (!was && worldEvent.type === "solar_flare") {
+              try { SFX.flare(); } catch (e) {}
+              pushKillFeed("SOLAR FLARE — ORE SURGE");
+            }
+          } else {
+            worldEvent = null;
+          }
         }
 
         if (payload.ship && payload.ship.id !== undefined) {
@@ -477,6 +591,35 @@
                   mergedHp = Math.min(prev.hp, incomingHp);
                 }
               }
+              if (prev && prev.alive && prev.hp > 0 && (mergedHp <= 0 || !incomingAlive)) {
+                const victim = (prev.name || s.name || `PILOT ${sId}`);
+                pushKillFeed(`${victim} HULL DESTROYED`);
+                try { SFX.explode(); } catch (e) {}
+              }
+              // Exact local trail formula: behind ship at (pos - cos*S, pos + sin*S), ship color, life 1
+              if (prev && Number.isFinite(prev.world_x) && incomingAlive && mergedHp > 0) {
+                const dx = wx - prev.world_x, dy = wy - prev.world_y;
+                const distSq = dx * dx + dy * dy;
+                if (distSq > 1) {
+                  // Use previous pose so exhaust sits where their engines were (matches own-screen trail)
+                  const ang = Number.isFinite(prev.angle) ? prev.angle : (Number(s.angle) || 0);
+                  const rad = (ang * Math.PI) / 180;
+                  const col = prev.color || RAINBOW[Number(sId)] || RAINBOW[2];
+                  // Subdivide long steps so trails look continuous like local 60fps thrust trails
+                  const steps = Math.min(4, Math.max(1, Math.floor(Math.sqrt(distSq) / 8)));
+                  for (let s = 0; s < steps; s++) {
+                    const t = (s + 1) / (steps + 1);
+                    const px = prev.world_x + dx * t;
+                    const py = prev.world_y + dy * t;
+                    trails.push({
+                      x: px - Math.cos(rad) * SHIP_SIZE,
+                      y: py + Math.sin(rad) * SHIP_SIZE,
+                      life: 1.0,
+                      color: col
+                    });
+                  }
+                }
+              }
               remoteShips[sId] = {
                 id: sId, 
                 world_x: wx, 
@@ -490,6 +633,7 @@
                 stasis: Boolean(s.stasis), 
                 is_charging_shield: Boolean(s.is_charging_shield),
                 shield_charge: Number.isFinite(Number(s.shield_charge)) ? Number(s.shield_charge) : 0,
+                color: s.color || RAINBOW[Number(sId)] || RAINBOW[2],
                 name: s.name || `PILOT ${sId}`
               };
             }
@@ -523,7 +667,7 @@
         }
 
         // Host applies damage reported by other players (their lasers may die before host simulates them)
-        if (myId === 1 && Array.isArray(payload.asteroid_hits)) {
+        if (isHost() && Array.isArray(payload.asteroid_hits)) {
           for (const h of payload.asteroid_hits) {
             const hid = Number(h.id);
             const hdmg = Number(h.dmg) || 1;
@@ -552,7 +696,7 @@
           }
         }
 
-        if (myId !== 1) {
+        if (!isHost()) {
           if (Array.isArray(payload.asteroids) && payload.asteroids.length > 0) {
             pruneRecentCollected();
             asteroids = payload.asteroids.map(a => {
@@ -655,7 +799,14 @@
           }
         }
       } else if (action === "player_left") { 
-        delete remoteShips[Number(msg.player_id)]; 
+        const leftId = Number(msg.player_id);
+        const left = remoteShips[leftId];
+        if (left) pushKillFeed(`${left.name || ("PILOT " + leftId)} LEFT`);
+        delete remoteShips[leftId];
+        if (isHost()) {
+          statusMessage = "You are now arena host.";
+          statusColor = CYAN;
+        }
       }
     }
 
@@ -723,6 +874,7 @@
       matchOver = false;
       matchResults = null;
       matchWinnerName = "";
+      resetMatchStats();
       if (myShip) myShip.kills = 0;
       for (const pid in remoteShips) {
         if (remoteShips[pid]) remoteShips[pid].kills = 0;
@@ -759,6 +911,7 @@
     function finishMatch(reason) {
       if (matchOver) return;
       matchOver = true;
+      try { SFX.matchEnd(); } catch (e) {}
       matchResults = getMatchStandings();
       if (isTeamMode()) {
         matchWinnerName = matchResults.length ? (matchResults[0].name + " TEAM") : "NOBODY";
@@ -867,12 +1020,19 @@
       const amount = Number(dmg) || 1;
       const wasAlive = rp.alive !== false && (Number.isFinite(rp.hp) ? rp.hp : 6) > 0;
       rp.hp = Math.max(0, (Number.isFinite(rp.hp) ? rp.hp : 6) - amount);
+      if (amount > 0 && wasAlive) {
+        matchStats.damageDealt += amount;
+        spawnFloatText(rp.world_x, rp.world_y, `-${Math.round(amount)}`, "rgb(255, 220, 80)");
+      }
       if (rp.hp <= 0) {
         rp.alive = false;
         rp.hp = 0;
         if (creditKill && wasAlive && myShip) {
           myShip.kills = (myShip.kills || 0) + 1;
+          matchStats.kills = myShip.kills;
           recordAccountStat("kills", 1);
+          pushKillFeed(`YOU DESTROYED A RIVAL`);
+          spawnFloatText(rp.world_x, rp.world_y - 20, "KILL", "rgb(255, 80, 80)");
         }
       }
       if (stasisTime) rp.stasis = true;
@@ -909,7 +1069,8 @@
         hp: 6, 
         max_hp: 6, 
         alive: true, 
-        respawn_timer: 0, 
+        respawn_timer: 0,
+        invuln_timer: 0,
         xp: 0, 
         kills: 0, 
         tier: 0, 
@@ -956,9 +1117,11 @@
       if (!myShip) return;
       spawnParticles(myShip.world_x, myShip.world_y, myShip.color, 40); 
       screenShake = 20;
+      try { SFX.explode(); } catch (e) {}
       myShip.hp = 0; 
       myShip.alive = false; 
       myShip.respawn_timer = 10.0;
+      myShip.invuln_timer = 0;
       myShip.xp = 0; 
       myShip.tier = 0; 
       myShip.current_node = "root"; 
@@ -1103,19 +1266,27 @@
           }
         }
       } else if (menuMode === "main") {
-        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 190 && pos.y <= 238) {
+        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 185 && pos.y <= 233) {
           if (!isConnected) connectWs();
           applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
           sendMsg({ action: "list_public" }); 
           statusMessage = "Searching active public games..."; 
           statusColor = RAINBOW[3];
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 260 && pos.y <= 308) {
+        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 250 && pos.y <= 298) {
           menuMode = "host_private"; passwordInput = ""; activeInput = "pass";
           openMobileKeyboard("roomPass");
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 330 && pos.y <= 378) {
+        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 315 && pos.y <= 363) {
           menuMode = "join_private"; roomCodeInput = ""; passwordInput = ""; activeInput = "code";
           openMobileKeyboard("roomCode");
-        } else if (pos.x >= cx - 60 && pos.x <= cx + 60 && pos.y >= 385 && pos.y <= 415) {
+        } else if (lastRoomCode && pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 380 && pos.y <= 428) {
+          if (!isConnected) connectWs();
+          roomCodeInput = lastRoomCode;
+          passwordInput = lastRoomPass || "";
+          pendingJoin = true;
+          sendMsg({ action: "join_room", room_code: lastRoomCode, password: lastRoomPass || null });
+          statusMessage = `Rejoining ${lastRoomCode}...`;
+          statusColor = RAINBOW[3];
+        } else if (pos.x >= cx - 60 && pos.x <= cx + 60 && pos.y >= 450 && pos.y <= 480) {
           sessionStorage.removeItem("astraclash_current_user");
           activePilot = null;
           authNameInput = "";
@@ -1168,7 +1339,7 @@
           closeMobileKeyboard();
           matchConfig = clampMatchConfig(matchConfig);
           if (!isConnected) connectWs();
-          sendMsg({ action: "create_room", public: false, password: passwordInput || null }); 
+          lastRoomPass = passwordInput || ""; sessionStorage.setItem("astraclash_last_pass", lastRoomPass); sendMsg({ action: "create_room", public: false, password: passwordInput || null }); 
           menuMode = "waiting"; 
           statusMessage = "Creating private arena...";
         } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) { 
@@ -1185,7 +1356,7 @@
         } else if (pos.x >= cx - 140 && pos.x <= cx - 10 && pos.y >= 365 && pos.y <= 407 && roomCodeInput.length === 4) {
           closeMobileKeyboard();
           if (!isConnected) connectWs();
-          sendMsg({ action: "join_room", room_code: roomCodeInput, password: passwordInput || null }); 
+          lastRoomCode = roomCodeInput; lastRoomPass = passwordInput || ""; sessionStorage.setItem("astraclash_last_room", lastRoomCode); sessionStorage.setItem("astraclash_last_pass", lastRoomPass); sendMsg({ action: "join_room", room_code: roomCodeInput, password: passwordInput || null }); 
           statusMessage = `Joining room [${roomCodeInput}]...`; 
           pendingJoin = true;
         } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) {
@@ -1249,6 +1420,7 @@
               myShip.tier = nextTier; 
               myShip.current_node = options[chosenIdx]; 
               UPGRADE_TREE[options[chosenIdx]].apply(myShip);
+              try { SFX.upgrade(); } catch (e) {}
               if (activePilot && nextTier > (activePilot.highest_tier || 0)) {
                 recordAccountStat("highest_tier", nextTier - (activePilot.highest_tier || 0));
               }
@@ -1495,13 +1667,21 @@
         vctx.fillText(isReg ? "CREATE PILOT PROFILE" : "AUTHENTICATE", cx, 362);
 
       } else if (menuMode === "waiting") {
-        drawCard(vctx, cx - 180, 220, 360, 160, CYAN);
+        drawCard(vctx, cx - 200, 180, 400, 260, CYAN);
         vctx.font = "bold 18px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
-        vctx.fillText(`ROOM CODE: ${roomCode || "PUBLIC"}`, cx, 260);
+        vctx.fillText(`ROOM CODE: ${roomCode || "PUBLIC"}`, cx, 220);
         vctx.font = "12px Consolas"; vctx.fillStyle = WHITE;
-        vctx.fillText("Waiting for opponents to connect (Max 6)...", cx, 300);
+        vctx.fillText("Waiting for opponents (Max 6)", cx, 248);
+        vctx.fillStyle = GRAY;
+        vctx.fillText("Match clock starts when 2+ pilots are in arena", cx, 270);
+        // Live roster preview (once someone joins, remoteShips may still be empty in pure waiting)
+        vctx.font = "11px Consolas";
+        vctx.fillStyle = CYAN;
+        vctx.fillText("PILOTS WILL APPEAR WHEN THE FIGHT BEGINS", cx, 300);
         const pulse = Math.floor((performance.now() / 50) % 10);
         vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 340, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
+        vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+        vctx.fillText("Share the room code with friends", cx, 390);
       } else {
         vctx.font = "bold 36px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center"; vctx.fillText("A S T R A C L A S H", cx, 75);
         vctx.font = "12px Consolas"; vctx.fillStyle = GRAY; vctx.fillText("6-PLAYER ORBITAL COMBAT & UPGRADE ARENA", cx, 102);
@@ -1520,12 +1700,13 @@
 
         if (menuMode === "main") {
           const buttons = [ { text: "QUICK PLAY (PUBLIC)", y: 185, col: CYAN }, { text: "HOST PRIVATE ROOM", y: 250, col: WHITE }, { text: "JOIN PRIVATE ROOM", y: 315, col: WHITE } ];
+          if (lastRoomCode) buttons.push({ text: `REJOIN ${lastRoomCode}`, y: 380, col: RAINBOW[3], rejoin: true });
           for (const b of buttons) {
             const hovered = mousePos.x >= cx - 150 && mousePos.x <= cx + 150 && mousePos.y >= b.y && mousePos.y <= b.y + 48;
             drawCard(vctx, cx - 150, b.y, 300, 48, hovered ? CYAN : b.col); vctx.font = "bold 16px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center"; vctx.fillText(b.text, cx, b.y + 30);
           }
           const logHover = mousePos.x >= cx - 60 && mousePos.x <= cx + 60 && mousePos.y >= 385 && mousePos.y <= 415;
-          drawCard(vctx, cx - 60, 385, 120, 30, logHover ? RAINBOW[1] : GRAY); vctx.font = "12px Consolas"; vctx.fillStyle = logHover ? RAINBOW[1] : WHITE; vctx.textAlign = "center"; vctx.fillText("LOGOUT", cx, 404);
+          drawCard(vctx, cx - 60, 450, 120, 30, logHover ? RAINBOW[1] : GRAY); vctx.font = "12px Consolas"; vctx.fillStyle = logHover ? RAINBOW[1] : WHITE; vctx.textAlign = "center"; vctx.fillText("LOGOUT", cx, 469);
 
         } else if (menuMode === "host_private") {
           drawCard(vctx, cx - 230, 100, 460, 380, CYAN);
@@ -1608,18 +1789,40 @@
 
       // Match clock (host drives; others follow packets)
       if (!matchOver) {
-        if (myId === 1) {
-          if (matchConfig.useTimer) {
+        const playerCount = 1 + Object.keys(remoteShips).length;
+        const matchActive = playerCount >= 2;
+        if (isHost()) {
+          // Solar flare event
+          if (matchActive) {
+            if (worldEvent) {
+              worldEvent.timeLeft -= dt;
+              if (worldEvent.timeLeft <= 0) worldEvent = null;
+            } else {
+              worldEventCooldown -= dt;
+              if (worldEventCooldown <= 0) {
+                worldEvent = { type: "solar_flare", timeLeft: 10, duration: 10 };
+                worldEventCooldown = 55 + Math.random() * 40;
+                try { SFX.flare(); } catch (e) {}
+                pushKillFeed("SOLAR FLARE — ORE SURGE");
+              }
+            }
+          }
+          if (matchActive && matchConfig.useTimer) {
             matchTimeLeft = Math.max(0, matchTimeLeft - dt);
           }
           const standings = getMatchStandings();
           const topKills = standings.length ? standings[0].kills : 0;
-          if (matchConfig.useKills && matchConfig.killLimit > 0 && topKills >= matchConfig.killLimit) {
+          if (matchActive && matchConfig.useKills && matchConfig.killLimit > 0 && topKills >= matchConfig.killLimit) {
             const label = isTeamMode() ? (standings[0].name + " TEAM") : standings[0].name;
             finishMatch(`${label} reached ${matchConfig.killLimit} kills!`);
-          } else if (matchConfig.useTimer && matchTimeLeft <= 0) {
+          } else if (matchActive && matchConfig.useTimer && matchTimeLeft <= 0) {
             finishMatch("Time limit reached!");
           }
+        }
+        // Non-host: tick local event timer for VFX if host sent it
+        if (!isHost() && worldEvent) {
+          worldEvent.timeLeft -= dt;
+          if (worldEvent.timeLeft <= 0) worldEvent = null;
         }
       } else {
         // Frozen combat — still allow return input
@@ -1633,7 +1836,7 @@
         netAccumulator += dt;
         if (netAccumulator >= NET_TICK_RATE) {
           netAccumulator = 0;
-          if (myShip && myId === 1) {
+          if (myShip && isHost()) {
             sendMsg({
               action: "game_packet",
               payload: {
@@ -1683,7 +1886,24 @@
           myShip.world_x = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1)); 
           myShip.world_y = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1)); 
           myShip.vx = 0.0; myShip.vy = 0.0; myShip.mana = 25.0; myShip.respawn_timer = 0;
+          myShip.invuln_timer = 1; // stays until first shot
         }
+      }
+      for (let i = killFeed.length - 1; i >= 0; i--) {
+        killFeed[i].life -= dt;
+        if (killFeed[i].life <= 0) killFeed.splice(i, 1);
+      }
+      // Floating damage numbers
+      for (let i = floatTexts.length - 1; i >= 0; i--) {
+        const f = floatTexts[i];
+        f.life -= dt;
+        f.y += f.vy * dt;
+        f.vy *= 0.98;
+        if (f.life <= 0) floatTexts.splice(i, 1);
+      }
+      // Survival clock (alive time in active multiplayer match)
+      if (!matchOver && myShip && myShip.alive && myShip.hp > 0 && (1 + Object.keys(remoteShips).length) >= 2) {
+        matchStats.timeAlive += dt;
       }
 
       if (myShip && myShip.cooldown > 0) myShip.cooldown -= dt;
@@ -1691,6 +1911,8 @@
 
       function emitShot(angDeg, offsetFwd, offsetSide, customLife = null, isMine = false) {
         if (!myShip || !myShip.alive) return;
+        if ((myShip.invuln_timer || 0) > 0) myShip.invuln_timer = 0; // firing ends spawn protection
+        if (!isMine) { try { SFX.shoot(); } catch (e) {} }
         angDeg = ((angDeg % 360) + 360) % 360;
         const rAng = (angDeg * Math.PI) / 180; const perp = rAng + Math.PI / 2;
         const lx = Number((myShip.world_x + offsetFwd * Math.cos(rAng) + offsetSide * Math.cos(perp)).toFixed(1)); const ly = Number((myShip.world_y - offsetFwd * Math.sin(rAng) - offsetSide * Math.sin(perp)).toFixed(1));
@@ -1728,6 +1950,7 @@
               myShip.world_x += Math.cos(rad) * 350;
               myShip.world_y -= Math.sin(rad) * 350;
               spawnParticles(myShip.world_x, myShip.world_y, CYAN, 15);
+              try { SFX.dash(); } catch (e) {}
             } else if (myShip.has_stasis_field) {
               // E raises field. Mana drains only while growing; full field protects free. E again launches.
               if (eTap) {
@@ -1736,6 +1959,7 @@
                     myShip.mana -= 10;
                     myShip.is_charging_shield = true;
                     myShip.shield_charge = 0.35;
+                    try { SFX.shield(); } catch (e) {}
                   }
                 } else {
                   emitStasis();
@@ -1877,7 +2101,7 @@
             hitAst = true;
             const ownerIsMe = Number(l.owner) === myId;
 
-            if (myId === 1) {
+            if (isHost()) {
               // Host is authoritative for asteroid HP. Only apply own shots here;
               // other players' shots arrive as asteroid_hits (lasers often expire before host sees them).
               if (ownerIsMe) {
@@ -1982,11 +2206,15 @@
             if (o.is_gold) { 
               myShip.hp = myShip.max_hp; myShip.mana += 100.0; 
               recordAccountStat("career_xp", 100);
+              matchStats.oreMined += 1;
+              spawnFloatText(o.x, o.y, "+ORE", ORE_GOLD);
             } else {
               const xpGain = Math.floor(15 * myShip.xp_mult);
               myShip.mana = Math.min(myShip.max_mana, myShip.mana + 20.0 * myShip.mana_mult); 
               myShip.xp += xpGain;
               recordAccountStat("career_xp", xpGain);
+              matchStats.oreMined += 1;
+              spawnFloatText(o.x, o.y, `+${xpGain}`, ORE_BLUE);
               if (myShip.heal_on_ore) {
                 myShip.ore_counter++;
                 if (myShip.ore_counter >= 5) {
@@ -1998,6 +2226,7 @@
             if (Number.isFinite(oid)) {
               outgoingCollectedOres.push(oid);
               recentCollectedIds.set(oid, performance.now());
+              try { SFX.ore(); } catch (e) {}
             }
             ores.splice(i, 1);
           }
@@ -2005,7 +2234,7 @@
       }
 
       // Host: also attract ores toward remote ships so authoritative positions move in
-      if (myId === 1) {
+      if (isHost()) {
         for (const o of ores) {
           for (const pid in remoteShips) {
             const p = remoteShips[pid];
@@ -2023,8 +2252,9 @@
         }
       }
 
-      if (myId === 1) {
-        oreRegenAccumulator += dt;
+      if (isHost()) {
+        const flareBoost = (worldEvent && worldEvent.type === "solar_flare") ? 0.35 : 1.0;
+        oreRegenAccumulator += dt / flareBoost;
         if (oreRegenAccumulator >= ORE_REGEN_INTERVAL) {
           oreRegenAccumulator = 0;
           if (ores.length < MAX_WORLD_ORES) {
@@ -2057,10 +2287,11 @@
               stasis: myShip.stasis_timer > 0, 
               is_charging_shield: Boolean(myShip.is_charging_shield),
               shield_charge: Number((myShip.shield_charge || 0).toFixed(2)),
+              color: myShip.color,
               name: myShip.name 
             } 
           };
-          if (myId === 1) {
+          if (isHost()) {
             outPayload.match_config = {
               mode: matchConfig.mode,
               useTimer: matchConfig.useTimer,
@@ -2069,6 +2300,11 @@
               killLimit: matchConfig.killLimit
             };
             outPayload.match_time = Number(matchTimeLeft.toFixed(1));
+            if (worldEvent) {
+              outPayload.world_event = { type: worldEvent.type, timeLeft: Number(worldEvent.timeLeft.toFixed(1)), duration: worldEvent.duration };
+            } else {
+              outPayload.world_event = null;
+            }
             if (matchOver) {
               outPayload.match_over = true;
               outPayload.match_reason = statusMessage;
@@ -2093,7 +2329,7 @@
             outPayload.asteroid_hits = outgoingAsteroidHits;
             outgoingAsteroidHits = [];
           }
-          if (myId === 1 && worldSyncAccumulator >= WORLD_SYNC_RATE) {
+          if (isHost() && worldSyncAccumulator >= WORLD_SYNC_RATE) {
             worldSyncAccumulator = 0;
             outPayload.asteroids = asteroids.map(a => ({ id: a.id, x: Math.round(a.x), y: Math.round(a.y), vx: Number(a.vx.toFixed(2)), vy: Number(a.vy.toFixed(2)), r: a.r, hp: a.hp, max_hp: a.max_hp, is_ore: a.is_ore, is_bomb: a.is_bomb }));
             outPayload.ores = ores.map(o => ({ id: o.id, x: Math.round(o.x), y: Math.round(o.y), is_gold: o.is_gold }));
@@ -2167,9 +2403,24 @@
       for (const p of particles) { const px = p.x - camX + cx; const py = p.y - camY + cy; vctx.fillStyle = p.color; vctx.globalAlpha = Math.max(0, p.life); vctx.fillRect(px, py, p.size, p.size); }
       vctx.globalAlpha = 1.0;
 
+      // Hit markers / floating combat text
+      vctx.textAlign = "center";
+      for (const f of floatTexts) {
+        const fx = f.x - camX + cx;
+        const fy = f.y - camY + cy;
+        if (fx < -40 || fx > V_WIDTH + 40 || fy < -40 || fy > V_HEIGHT + 40) continue;
+        const a = Math.max(0, Math.min(1, f.life / 0.35));
+        vctx.globalAlpha = a;
+        vctx.font = "bold 14px Consolas";
+        vctx.fillStyle = f.color;
+        vctx.fillText(f.text, fx, fy);
+      }
+      vctx.globalAlpha = 1.0;
+
       for (const pid in remoteShips) {
         const p = remoteShips[pid]; if (!p) continue;
-        const ox = p.world_x - camX + cx; const oy = p.world_y - camY + cy; const rCol = RAINBOW[Number(p.id)] || RAINBOW[2];
+        const ox = p.world_x - camX + cx; const oy = p.world_y - camY + cy;
+        const rCol = p.color || RAINBOW[Number(p.id)] || RAINBOW[2];
 
         if (ox >= -50 && ox <= V_WIDTH + 50 && oy >= -50 && oy <= V_HEIGHT + 50) {
           drawDirectShip(vctx, ox, oy, p.angle, rCol, !p.alive || p.hp <= 0);
@@ -2235,6 +2486,20 @@
 
       const isDead = !myShip.alive || myShip.hp <= 0;
       drawDirectShip(vctx, cx, cy, myShip.angle, myShip.color, isDead);
+      if (!isDead && (myShip.invuln_timer || 0) > 0) {
+        const blink = Math.sin(performance.now() / 80) > 0;
+        if (blink) {
+          vctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+          vctx.lineWidth = 2;
+          vctx.beginPath();
+          vctx.arc(cx, cy, SHIP_SIZE + 8, 0, Math.PI * 2);
+          vctx.stroke();
+        }
+        vctx.font = "9px Consolas";
+        vctx.fillStyle = WHITE;
+        vctx.textAlign = "center";
+        vctx.fillText("SAFE — FIRE TO ARM", cx, cy + SHIP_SIZE + 18);
+      }
 
       if (myShip.is_charging_shield) {
         const charge = myShip.shield_charge || 0;
@@ -2368,6 +2633,82 @@
       vctx.fillStyle = (myShip.can_dash && myShip.dash_cooldown <= 0) || myShip.has_stasis_field ? CYAN : WHITE;
       vctx.fillText(`ABILITY (E): ${apLabel}`, 20, abilY);
 
+      // Kill feed — left side, right under the XP/mana bar
+      vctx.font = "11px Consolas";
+      vctx.textAlign = "left";
+      const feedY0 = 36;
+      for (let i = 0; i < killFeed.length; i++) {
+        const a = Math.min(1, killFeed[i].life);
+        vctx.fillStyle = `rgba(255, 220, 180, ${a})`;
+        vctx.fillText(killFeed[i].text, 20, feedY0 + i * 14);
+      }
+
+      // Minimap — only if 5+ kills behind the pilot ranked directly above you
+      {
+        const board = [{ name: myShip.name, kills: myShip.kills || 0, id: myId }]
+          .concat(Object.values(remoteShips).map(p => ({ name: p.name, kills: p.kills || 0, id: p.id })))
+          .sort((a, b) => b.kills - a.kills);
+        let myRank = board.findIndex(e => e.id === myId);
+        if (myRank < 0) myRank = 0;
+        let showRadar = false;
+        if (myRank > 0) {
+          const above = board[myRank - 1];
+          const gap = (above.kills || 0) - (myShip.kills || 0);
+          showRadar = gap >= 5;
+        }
+        if (showRadar) {
+          const mmS = 110, mmX = 20, mmY = V_HEIGHT - mmS - 16;
+          const scale = mmS / (WORLD_BOUND * 2);
+          vctx.fillStyle = "rgba(8, 12, 24, 0.75)";
+          vctx.fillRect(mmX, mmY, mmS, mmS);
+          vctx.strokeStyle = "rgba(0, 255, 255, 0.5)";
+          vctx.lineWidth = 1;
+          vctx.strokeRect(mmX, mmY, mmS, mmS);
+          const toM = (wx, wy) => ({
+            x: mmX + mmS / 2 + wx * scale,
+            y: mmY + mmS / 2 + wy * scale
+          });
+          for (const a of asteroids) {
+            const p = toM(a.x, a.y);
+            vctx.fillStyle = a.is_bomb ? "rgb(200, 60, 60)" : (a.is_ore ? "rgb(40, 120, 200)" : "rgb(80, 80, 90)");
+            vctx.fillRect(p.x - 1, p.y - 1, 2, 2);
+          }
+          for (const pid in remoteShips) {
+            const r = remoteShips[pid];
+            if (!r || !r.alive) continue;
+            const p = toM(r.world_x, r.world_y);
+            vctx.fillStyle = RAINBOW[Number(r.id)] || WHITE;
+            vctx.beginPath(); vctx.arc(p.x, p.y, 3, 0, Math.PI * 2); vctx.fill();
+          }
+          if (myShip) {
+            const p = toM(myShip.world_x, myShip.world_y);
+            vctx.fillStyle = CYAN;
+            vctx.beginPath(); vctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); vctx.fill();
+          }
+          vctx.font = "9px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "left";
+          vctx.fillText("RADAR (CATCH-UP)", mmX + 4, mmY + 12);
+        }
+      }
+
+      // Solar flare screen tint + banner
+      if (worldEvent && worldEvent.type === "solar_flare") {
+        const t = worldEvent.timeLeft / (worldEvent.duration || 10);
+        vctx.fillStyle = `rgba(255, 80, 20, ${0.08 + 0.1 * Math.sin(performance.now() / 200)})`;
+        vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+        vctx.font = "bold 14px Consolas";
+        vctx.textAlign = "center";
+        vctx.fillStyle = RAINBOW[1];
+        vctx.fillText(`SOLAR FLARE  ${Math.ceil(worldEvent.timeLeft)}s  ·  ORE SURGE`, V_WIDTH / 2, V_HEIGHT - 24);
+      }
+
+      // Waiting for second player banner
+      if (!matchOver && 1 + Object.keys(remoteShips).length < 2) {
+        vctx.font = "bold 13px Consolas";
+        vctx.textAlign = "center";
+        vctx.fillStyle = RAINBOW[3];
+        vctx.fillText("WAITING FOR PLAYERS — CLOCK PAUSED", V_WIDTH / 2, V_HEIGHT - 48);
+      }
+
       if (!matchOver && myShip.alive && myShip.hp > 0) {
         const currentNode = myShip.current_node; const options = UPGRADE_TREE[currentNode]?.children || []; const nextTier = myShip.tier + 1;
         if (options.length > 0 && nextTier < TIER_XP_THRESHOLDS.length && myShip.xp >= TIER_XP_THRESHOLDS[nextTier]) {
@@ -2383,7 +2724,7 @@
       if (matchOver) {
         vctx.fillStyle = "rgba(5, 8, 18, 0.82)";
         vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
-        drawCard(vctx, V_WIDTH / 2 - 220, 120, 440, 320, CYAN);
+        drawCard(vctx, V_WIDTH / 2 - 220, 100, 440, 340, CYAN);
         vctx.textAlign = "center";
         vctx.font = "bold 28px Consolas";
         vctx.fillStyle = CYAN;
@@ -2398,18 +2739,33 @@
           const k = board[i].kills || 0;
           if (isTeamMode()) {
             vctx.fillStyle = TEAM_COLORS[board[i].team] || WHITE;
-            vctx.fillText(`${i + 1}. ${board[i].name}`, V_WIDTH / 2 - 160, 240 + i * 24);
-            vctx.fillText(`${k} kills`, V_WIDTH / 2 + 80, 240 + i * 24);
+            vctx.fillText(`${i + 1}. ${board[i].name}`, V_WIDTH / 2 - 160, 228 + i * 20);
+            vctx.fillText(`${k} kills`, V_WIDTH / 2 + 80, 228 + i * 20);
           } else {
             vctx.fillStyle = i === 0 ? RAINBOW[4] : WHITE;
-            vctx.fillText(`${i + 1}. ${board[i].name}`, V_WIDTH / 2 - 160, 240 + i * 24);
-            vctx.fillText(`${k} kill${k === 1 ? "" : "s"}`, V_WIDTH / 2 + 80, 240 + i * 24);
+            vctx.fillText(`${i + 1}. ${board[i].name}`, V_WIDTH / 2 - 160, 228 + i * 20);
+            vctx.fillText(`${k} kill${k === 1 ? "" : "s"}`, V_WIDTH / 2 + 80, 228 + i * 20);
           }
         }
+        // Personal match stats
+        const aliveM = Math.floor(matchStats.timeAlive / 60);
+        const aliveS = Math.floor(matchStats.timeAlive % 60);
+        const aliveStr = `${aliveM}:${aliveS.toString().padStart(2, "0")}`;
+        vctx.font = "bold 12px Consolas";
+        vctx.fillStyle = CYAN;
+        vctx.textAlign = "center";
+        vctx.fillText("YOUR STATS", V_WIDTH / 2, 360);
+        vctx.font = "12px Consolas";
+        vctx.fillStyle = WHITE;
+        vctx.fillText(
+          `DMG ${Math.round(matchStats.damageDealt)}   TAKEN ${Math.round(matchStats.damageTaken)}   ORE ${matchStats.oreMined}   ALIVE ${aliveStr}`,
+          V_WIDTH / 2,
+          380
+        );
         vctx.textAlign = "center";
         vctx.font = "12px Consolas";
         vctx.fillStyle = GRAY;
-        vctx.fillText("PRESS SPACE / ENTER — RETURN TO HANGAR", V_WIDTH / 2, 410);
+        vctx.fillText("PRESS SPACE / ENTER — RETURN TO HANGAR", V_WIDTH / 2, 415);
       }
     }
   </script>
