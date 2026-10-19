@@ -2767,25 +2767,27 @@
         vctx.strokeRect(20, fieldY, 140, 8);
       }
 
-      let apLabel = "LOCKED";
-      if (myShip.can_dash) apLabel = myShip.dash_cooldown <= 0 && myShip.mana >= 40 ? "PHASE DASH READY" : "RECHARGING";
-      else if (myShip.has_stasis_field) {
-        apLabel = myShip.is_charging_shield ? "E AGAIN TO LAUNCH" : "PRESS E FOR FIELD";
-      } else apLabel = "PASSIVE ONLY";
-      vctx.font = "11px Consolas"; vctx.textAlign = "left";
-      const abilY = myShip.has_stasis_field ? 62 : 50;
-      vctx.fillStyle = (myShip.can_dash && myShip.dash_cooldown <= 0) || myShip.has_stasis_field ? CYAN : WHITE;
-      vctx.fillText(`ABILITY (E): ${apLabel}`, 20, abilY);
-
-      // Kill feed — left side, right under the XP/mana bar
+      // Kill feed — left, under XP bar
       vctx.font = "11px Consolas";
       vctx.textAlign = "left";
-      const feedY0 = 36;
+      const feedY0 = 38;
       for (let i = 0; i < killFeed.length; i++) {
         const a = Math.min(1, killFeed[i].life);
         vctx.fillStyle = `rgba(255, 220, 180, ${a})`;
         vctx.fillText(killFeed[i].text, 20, feedY0 + i * 14);
       }
+
+      let apLabel = "LOCKED";
+      if (myShip.can_dash) apLabel = myShip.dash_cooldown <= 0 && myShip.mana >= 40 ? "PHASE DASH READY" : "RECHARGING";
+      else if (myShip.has_stasis_field) {
+        apLabel = myShip.is_charging_shield ? "E AGAIN TO LAUNCH" : "PRESS E FOR FIELD";
+      } else apLabel = "PASSIVE ONLY";
+      const feedH = killFeed.length * 14;
+      const abilY = 42 + Math.max(feedH, 0) + (myShip.has_stasis_field ? 14 : 4);
+      vctx.font = "11px Consolas";
+      vctx.textAlign = "left";
+      vctx.fillStyle = (myShip.can_dash && myShip.dash_cooldown <= 0) || myShip.has_stasis_field ? CYAN : WHITE;
+      vctx.fillText(`ABILITY (E): ${apLabel}`, 20, abilY);
 
       // Minimap — only if 5+ kills behind the pilot ranked directly above you
       {
@@ -2854,12 +2856,27 @@
       }
 
       if (!matchOver && myShip.alive && myShip.hp > 0) {
-        const currentNode = myShip.current_node; const options = UPGRADE_TREE[currentNode]?.children || []; const nextTier = myShip.tier + 1;
+        const currentNode = myShip.current_node;
+        const options = UPGRADE_TREE[currentNode]?.children || [];
+        const nextTier = myShip.tier + 1;
         if (options.length > 0 && nextTier < TIER_XP_THRESHOLDS.length && myShip.xp >= TIER_XP_THRESHOLDS[nextTier]) {
-          drawCard(vctx, V_WIDTH / 2 - 275, 38, 550, 46, RAINBOW[4]);
-          for (let i = 0; i < Math.min(options.length, 3); i++) {
-            const optKey = options[i]; const optData = UPGRADE_TREE[optKey]; vctx.font = "bold 11px Consolas"; vctx.fillStyle = i === 0 ? WHITE : (i === 1 ? RAINBOW[3] : CYAN);
-            vctx.fillText(`[${i + 1}] ${optData.name}: ${optData.desc}`, V_WIDTH / 2 - 265, 50 + i * 13);
+          const n = Math.min(options.length, 3);
+          const cardW = 520;
+          const cardH = 28 + n * 22;
+          const cardX = V_WIDTH / 2 - cardW / 2;
+          const cardY = 96;
+          drawCard(vctx, cardX, cardY, cardW, cardH, RAINBOW[4]);
+          vctx.font = "bold 12px Consolas";
+          vctx.textAlign = "center";
+          vctx.fillStyle = RAINBOW[4];
+          vctx.fillText("CHOOSE UPGRADE", V_WIDTH / 2, cardY + 16);
+          vctx.textAlign = "left";
+          for (let i = 0; i < n; i++) {
+            const optKey = options[i];
+            const optData = UPGRADE_TREE[optKey];
+            vctx.font = "bold 12px Consolas";
+            vctx.fillStyle = i === 0 ? WHITE : (i === 1 ? RAINBOW[3] : CYAN);
+            vctx.fillText(`[${i + 1}] ${optData.name} — ${optData.desc}`, cardX + 14, cardY + 36 + i * 20);
           }
         }
       }
