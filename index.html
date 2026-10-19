@@ -1,13 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#00ffff" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="AstraClash" />
-  <link rel="apple-touch-icon" href="/icon-192.png" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>AstraClash</title>
@@ -16,11 +9,56 @@
     body { background-color: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; font-family: Consolas, monospace; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     #gameCanvas { background-color: rgb(10, 10, 25); image-rendering: pixelated; cursor: pointer; }
     .touch-ui { position: fixed; z-index: 99; pointer-events: auto; display: none; }
-    .d-pad { bottom: 20px; left: 20px; display: grid; grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(2, 50px); gap: 8px; }
-    .action-pad { bottom: 25px; right: 20px; display: flex; gap: 12px; }
+    /* Virtual joystick — left side */
+    .joy-wrap {
+      bottom: 28px; left: 18px;
+      width: 130px; height: 130px;
+      touch-action: none;
+    }
+    .joy-base {
+      width: 130px; height: 130px; border-radius: 50%;
+      background: rgba(15, 22, 40, 0.55);
+      border: 2px solid rgba(0, 255, 255, 0.45);
+      position: relative;
+    }
+    .joy-stick {
+      width: 54px; height: 54px; border-radius: 50%;
+      background: rgba(0, 255, 255, 0.35);
+      border: 2px solid #00ffff;
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      box-shadow: 0 0 12px rgba(0, 255, 255, 0.35);
+    }
+    /* Right action cluster: ability center, fire below */
+    .action-pad {
+      bottom: 100px; right: 16px;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
     .upgrade-pad { top: 70px; right: 20px; display: flex; gap: 10px; }
-    .t-btn { background: rgba(20, 30, 50, 0.75); border: 2px solid #00ffff; color: #fff; font-size: 16px; font-weight: bold; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
-    .t-btn:active { background: rgba(0, 255, 255, 0.4); }
+    .t-btn {
+      background: rgba(20, 30, 50, 0.8);
+      border: 2px solid #00ffff;
+      color: #fff;
+      font-size: 15px;
+      font-weight: bold;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .t-btn:active, .t-btn.active { background: rgba(0, 255, 255, 0.4); }
+    #btn-ability {
+      width: 64px; height: 64px; border-radius: 50%;
+      font-size: 13px;
+    }
+    #btn-fire {
+      width: 78px; height: 78px; border-radius: 50%;
+      border-color: #ff3c3c;
+      background: rgba(60, 20, 25, 0.85);
+      font-size: 15px;
+    }
+    #btn-fire:active, #btn-fire.active {
+      background: rgba(255, 60, 60, 0.45);
+    }
     /* Real input so mobile OS keyboards can open (canvas key events do not) */
     #mobileTextInput {
       position: fixed;
@@ -51,14 +89,17 @@
   <canvas id="gameCanvas" width="1000" height="600"></canvas>
   <input id="mobileTextInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" inputmode="text" />
 
-  <div class="touch-ui d-pad" id="group-dpad">
-    <div></div><div class="t-btn" id="btn-up">▲</div><div></div>
-    <div class="t-btn" id="btn-left">◀</div><div></div><div class="t-btn" id="btn-right">▶</div>
+  <!-- Virtual joystick (move / turn) -->
+  <div class="touch-ui joy-wrap" id="group-dpad">
+    <div class="joy-base" id="joy-base">
+      <div class="joy-stick" id="joy-stick"></div>
+    </div>
   </div>
 
+  <!-- Ability above fire (fire sits lower like a d-pad "down") -->
   <div class="touch-ui action-pad" id="group-action">
-    <div class="t-btn" style="width: 65px; height: 65px; border-color: #ff3c3c;" id="btn-fire">FIRE</div>
-    <div class="t-btn" style="width: 55px; height: 55px;" id="btn-ability">ABIL</div>
+    <div class="t-btn" id="btn-ability">ABIL</div>
+    <div class="t-btn" id="btn-fire">FIRE</div>
   </div>
 
   <div class="touch-ui upgrade-pad" id="group-upgrade">
@@ -160,7 +201,7 @@
 
     function updateTouchUIVisibility() {
       const showTouch = isTouchDevice && !inLobby;
-      document.getElementById("group-dpad").style.display = showTouch ? "grid" : "none";
+      document.getElementById("group-dpad").style.display = showTouch ? "block" : "none";
       document.getElementById("group-action").style.display = showTouch ? "flex" : "none";
       document.getElementById("group-upgrade").style.display = showTouch ? "flex" : "none";
     }
@@ -1441,18 +1482,114 @@
 
     function bindTouch(id, keyName, isPressEvent = false) {
       const el = document.getElementById(id); if (!el) return;
-      el.addEventListener("touchstart", (e) => { e.preventDefault(); if (isPressEvent) { window.dispatchEvent(new KeyboardEvent("keydown", { code: keyName, key: keyName.replace("Digit", "") })); } else { keysDown[keyName] = true; } });
-      el.addEventListener("touchend", (e) => { e.preventDefault(); if (!isPressEvent) { keysDown[keyName] = false; } });
+      const down = (e) => {
+        e.preventDefault();
+        if (isPressEvent) {
+          window.dispatchEvent(new KeyboardEvent("keydown", { code: keyName, key: keyName.replace("Digit", "") }));
+        } else {
+          keysDown[keyName] = true;
+          el.classList.add("active");
+        }
+      };
+      const up = (e) => {
+        e.preventDefault();
+        if (!isPressEvent) {
+          keysDown[keyName] = false;
+          el.classList.remove("active");
+        }
+      };
+      el.addEventListener("touchstart", down, { passive: false });
+      el.addEventListener("touchend", up, { passive: false });
+      el.addEventListener("touchcancel", up, { passive: false });
+      el.addEventListener("mousedown", down);
+      el.addEventListener("mouseup", up);
+      el.addEventListener("mouseleave", up);
     }
 
-    bindTouch("btn-up", "KeyW"); bindTouch("btn-left", "KeyA"); bindTouch("btn-right", "KeyD"); bindTouch("btn-fire", "Space");
+    // Virtual joystick → W (thrust) / A D (turn)
+    (function setupJoystick() {
+      const base = document.getElementById("joy-base");
+      const stick = document.getElementById("joy-stick");
+      if (!base || !stick) return;
+      const maxR = 38;
+      let activeId = null;
 
-    const abilityBtn = document.getElementById("btn-ability");
-    if (abilityBtn) {
-      abilityBtn.addEventListener("touchstart", (e) => { e.preventDefault(); keysDown["KeyE"] = true; });
-      abilityBtn.addEventListener("touchend", (e) => { e.preventDefault(); keysDown["KeyE"] = false; });
-    }
-    bindTouch("btn-1", "Digit1", true); bindTouch("btn-2", "Digit2", true); bindTouch("btn-3", "Digit3", true);
+      function setKeys(nx, ny) {
+        // ny negative = stick up = thrust
+        keysDown["KeyW"] = ny < -0.25;
+        keysDown["ArrowUp"] = keysDown["KeyW"];
+        keysDown["KeyA"] = nx < -0.28;
+        keysDown["ArrowLeft"] = keysDown["KeyA"];
+        keysDown["KeyD"] = nx > 0.28;
+        keysDown["ArrowRight"] = keysDown["KeyD"];
+      }
+
+      function resetStick() {
+        stick.style.transform = "translate(-50%, -50%)";
+        setKeys(0, 0);
+        keysDown["KeyW"] = keysDown["ArrowUp"] = false;
+        keysDown["KeyA"] = keysDown["ArrowLeft"] = false;
+        keysDown["KeyD"] = keysDown["ArrowRight"] = false;
+        activeId = null;
+      }
+
+      function moveTo(clientX, clientY) {
+        const rect = base.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let dx = clientX - cx;
+        let dy = clientY - cy;
+        const len = Math.hypot(dx, dy) || 1;
+        if (len > maxR) {
+          dx = (dx / len) * maxR;
+          dy = (dy / len) * maxR;
+        }
+        stick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+        setKeys(dx / maxR, dy / maxR);
+      }
+
+      base.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        const t = e.changedTouches[0];
+        activeId = t.identifier;
+        moveTo(t.clientX, t.clientY);
+      }, { passive: false });
+
+      base.addEventListener("touchmove", (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (t.identifier === activeId) moveTo(t.clientX, t.clientY);
+        }
+      }, { passive: false });
+
+      const end = (e) => {
+        for (const t of e.changedTouches) {
+          if (t.identifier === activeId) resetStick();
+        }
+      };
+      base.addEventListener("touchend", end, { passive: false });
+      base.addEventListener("touchcancel", end, { passive: false });
+
+      // Mouse fallback for desktop testing
+      let mouseDrag = false;
+      base.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        mouseDrag = true;
+        moveTo(e.clientX, e.clientY);
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (mouseDrag) moveTo(e.clientX, e.clientY);
+      });
+      window.addEventListener("mouseup", () => {
+        if (mouseDrag) { mouseDrag = false; resetStick(); }
+      });
+    })();
+
+    bindTouch("btn-fire", "Space");
+    bindTouch("btn-ability", "KeyE");
+    bindTouch("btn-1", "Digit1", true);
+    bindTouch("btn-2", "Digit2", true);
+    bindTouch("btn-3", "Digit3", true);
 
     const FIXED_STEP = 1 / 60; // physics is per-step, so run it at a fixed rate on every monitor
     let stepAccumulator = 0;
@@ -2775,9 +2912,6 @@
         vctx.fillText("PRESS SPACE / ENTER — RETURN TO HANGAR", V_WIDTH / 2, 415);
       }
     }
-    if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
-}
   </script>
 </body>
 </html>
