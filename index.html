@@ -3771,6 +3771,35 @@
       }
     }
 
+    // ---- Projectile colors: every shot uses its owner's ship color (custom colors included) ----
+    const _lumaCache = new Map();
+    function colorLuma(c) {
+      if (typeof c !== "string") return 255;
+      if (_lumaCache.has(c)) return _lumaCache.get(c);
+      let r, g, b, m, out = 255;
+      if ((m = c.match(/rgba?\(\s*(\d+(?:\.\d+)?)[,\s]+(\d+(?:\.\d+)?)[,\s]+(\d+(?:\.\d+)?)/i))) {
+        r = +m[1]; g = +m[2]; b = +m[3];
+        out = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      } else if ((m = c.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i))) {
+        let h = m[1];
+        if (h.length === 3) h = h.split("").map(x => x + x).join("");
+        r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16);
+        out = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+      if (_lumaCache.size > 200) _lumaCache.clear();
+      _lumaCache.set(c, out);
+      return out;
+    }
+    /** Dark colors (e.g. Void Black) would vanish against space, so shots get a light halo. */
+    function isDarkColor(c) { return colorLuma(c) < 70; }
+    function ownerShotColor(owner) {
+      const id = Number(owner);
+      if (id === Number(myId) && myShip && myShip.color) return myShip.color;
+      const rp = remoteShips[id];
+      if (rp && rp.color) return rp.color;
+      return RAINBOW[id] || "rgb(255, 50, 50)";
+    }
+
     function renderGame() {
       const currentShake = Number.isFinite(screenShake) ? screenShake : 0;
       const shakeX = currentShake > 0 ? (Math.random() - 0.5) * currentShake : 0; 
@@ -3825,11 +3854,33 @@
 
       for (let i = 0; i < lasers.length; i++) {
         const l = lasers[i]; if (!l) continue;
-        const lx = l.x - camX + cx; const ly = l.y - camY + cy; const rad = (l.angle * Math.PI) / 180; const lColor = RAINBOW[Number(l.owner)] || "rgb(255, 50, 50)";
-        if (l.is_stasis) { vctx.fillStyle = `rgba(0, 255, 255, 0.4)`; vctx.strokeStyle = `rgb(0, 255, 255)`; vctx.lineWidth = 2; vctx.beginPath(); vctx.arc(lx, ly, l.size, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); } 
-        else if (l.is_mine) { vctx.fillStyle = lColor; vctx.strokeStyle = "rgb(255, 50, 50)"; vctx.lineWidth = 2; vctx.beginPath(); vctx.arc(lx, ly, 6 + Math.sin(performance.now() / 150) * 3, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); } 
-        else if (l.is_missile) { vctx.fillStyle = lColor; vctx.strokeStyle = WHITE; vctx.lineWidth = 1.5; vctx.beginPath(); vctx.arc(lx, ly, 4.5, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); vctx.strokeStyle = "rgb(255, 170, 40)"; vctx.lineWidth = 2; vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx - 12 * Math.cos(rad), ly + 12 * Math.sin(rad)); vctx.stroke(); } 
-        else { vctx.strokeStyle = lColor; vctx.lineWidth = 3; vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx + 15 * Math.cos(rad), ly - 15 * Math.sin(rad)); vctx.stroke(); }
+        const lx = l.x - camX + cx; const ly = l.y - camY + cy; const rad = (l.angle * Math.PI) / 180;
+        const lColor = ownerShotColor(l.owner);
+        const dark = isDarkColor(lColor);
+        const HALO = "rgba(190, 205, 255, 0.65)";
+        if (l.is_stasis) {
+          // force-field blast: bubble in the owner's ship color
+          vctx.beginPath(); vctx.arc(lx, ly, l.size, 0, Math.PI * 2);
+          vctx.globalAlpha = 0.4; vctx.fillStyle = lColor; vctx.fill();
+          vctx.globalAlpha = 1.0; vctx.strokeStyle = dark ? HALO : lColor; vctx.lineWidth = 2; vctx.stroke();
+        }
+        else if (l.is_mine) {
+          vctx.fillStyle = lColor; vctx.strokeStyle = dark ? HALO : "rgb(255, 50, 50)"; vctx.lineWidth = 2;
+          vctx.beginPath(); vctx.arc(lx, ly, 6 + Math.sin(performance.now() / 150) * 3, 0, Math.PI * 2); vctx.fill(); vctx.stroke();
+        }
+        else if (l.is_missile) {
+          vctx.fillStyle = lColor; vctx.strokeStyle = WHITE; vctx.lineWidth = 1.5;
+          vctx.beginPath(); vctx.arc(lx, ly, 4.5, 0, Math.PI * 2); vctx.fill(); vctx.stroke();
+          // exhaust trail in the ship color too
+          if (dark) { vctx.strokeStyle = HALO; vctx.lineWidth = 4; vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx - 12 * Math.cos(rad), ly + 12 * Math.sin(rad)); vctx.stroke(); }
+          vctx.strokeStyle = lColor; vctx.lineWidth = 2;
+          vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx - 12 * Math.cos(rad), ly + 12 * Math.sin(rad)); vctx.stroke();
+        }
+        else {
+          vctx.beginPath(); vctx.moveTo(lx, ly); vctx.lineTo(lx + 15 * Math.cos(rad), ly - 15 * Math.sin(rad));
+          if (dark) { vctx.strokeStyle = HALO; vctx.lineWidth = 6; vctx.stroke(); }
+          vctx.strokeStyle = lColor; vctx.lineWidth = 3; vctx.stroke();
+        }
       }
 
       for (const p of particles) { const px = p.x - camX + cx; const py = p.y - camY + cy; vctx.fillStyle = p.color; vctx.globalAlpha = Math.max(0, p.life); vctx.fillRect(px, py, p.size, p.size); }
