@@ -1266,7 +1266,8 @@
                 xp: Number.isFinite(Number(s.xp)) ? Number(s.xp) : 0, 
                 tier: Number.isFinite(Number(s.tier)) ? Number(s.tier) : tierFromXp(Number(s.xp) || 0),
                 kills: Number.isFinite(Number(s.kills)) ? Number(s.kills) : (prev && prev.kills) || 0, 
-                stasis: Boolean(s.stasis), 
+                stasis: Boolean(s.stasis),
+                invuln_timer: Math.max(0, Number(s.invuln_timer) || 0),
                 is_charging_shield: Boolean(s.is_charging_shield),
                 shield_charge: Number.isFinite(Number(s.shield_charge)) ? Number(s.shield_charge) : 0,
                 color: s.color || RAINBOW[Number(sId)] || RAINBOW[2],
@@ -1692,7 +1693,7 @@
     function applyDamageToRemote(targetId, dmg, stasisTime, creditKill) {
       const id = Number(targetId);
       const rp = remoteShips[id];
-      if (!rp) return;
+      if (!rp || (Number(rp.invuln_timer) || 0) > 0) return;
       const amount = Number(dmg) || 1;
       const wasAlive = rp.alive !== false && (Number.isFinite(rp.hp) ? rp.hp : 6) > 0;
       rp.hp = Math.max(0, (Number.isFinite(rp.hp) ? rp.hp : 6) - amount);
@@ -1750,6 +1751,8 @@
       const id = Number(targetId);
       if (!Number.isFinite(id) || id === myId) return;
       if (sameTeam(myId, id)) return; // friendly fire off in team modes
+      const target = remoteShips[id];
+      if (target && (Number(target.invuln_timer) || 0) > 0) return; // spawn protection: no hit event at all
       const amount = Number(dmg) || 1;
       const st = stasisTime ? Number(stasisTime) : 0;
       pendingHits.push({ target: id, dmg: amount, stasis: st > 0 ? st : undefined });
@@ -3574,7 +3577,7 @@
           if (Number(l.owner) === myId) {
             for (const pid in remoteShips) {
               const p = remoteShips[pid];
-              if (!p || !p.alive || p.hp <= 0) continue;
+              if (!p || !p.alive || p.hp <= 0 || (Number(p.invuln_timer) || 0) > 0) continue;
               const pDSq = (l.x - p.world_x) * (l.x - p.world_x) + (l.y - p.world_y) * (l.y - p.world_y);
               if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
                 queueHit(p.id, l.dmg || 1, l.is_stasis ? l.stasis_time : 0);
@@ -3584,8 +3587,9 @@
                 break;
               }
             }
-          } else if (myShip && myShip.alive && myShip.hp > 0) {
-            // Enemy shot — destroy on contact with our ship (damage arrives via network)
+          } else if (myShip && myShip.alive && myShip.hp > 0 && (Number(myShip.invuln_timer) || 0) <= 0) {
+            // Enemy shot — destroy on contact with our ship (damage arrives via network).
+            // Spawn-protected ships do not register projectile contact.
             const pDSq = (l.x - myShip.world_x) * (l.x - myShip.world_x) + (l.y - myShip.world_y) * (l.y - myShip.world_y);
             if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
               lasers.splice(i, 1);
@@ -3597,7 +3601,7 @@
             for (const pid in remoteShips) {
               if (Number(pid) === Number(l.owner)) continue;
               const p = remoteShips[pid];
-              if (!p || !p.alive || p.hp <= 0) continue;
+              if (!p || !p.alive || p.hp <= 0 || (Number(p.invuln_timer) || 0) > 0) continue;
               const pDSq = (l.x - p.world_x) * (l.x - p.world_x) + (l.y - p.world_y) * (l.y - p.world_y);
               if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
                 lasers.splice(i, 1);
@@ -3714,7 +3718,8 @@
               alive: myShip.alive, 
               xp: myShip.xp, 
               tier: myShip.tier || 0,
-              kills: myShip.kills || 0, 
+              kills: myShip.kills || 0,
+              invuln_timer: Math.max(0, Number(myShip.invuln_timer) || 0),
               stasis: myShip.stasis_timer > 0, 
               is_charging_shield: Boolean(myShip.is_charging_shield),
               shield_charge: Number((myShip.shield_charge || 0).toFixed(2)),
@@ -3911,6 +3916,14 @@
           if (p.stasis) { 
             vctx.fillStyle = `rgba(200, 200, 255, 0.4)`; vctx.strokeStyle = `rgb(255, 255, 255)`; vctx.beginPath(); 
             vctx.arc(ox, oy, SHIP_SIZE + 15, 0, Math.PI * 2); vctx.fill(); vctx.stroke(); 
+          }
+          // Show the same blinking white spawn-protection ring to every player.
+          if ((Number(p.invuln_timer) || 0) > 0 && Math.sin(performance.now() / 80) > 0) {
+            vctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+            vctx.lineWidth = 2;
+            vctx.beginPath();
+            vctx.arc(ox, oy, SHIP_SIZE + 8, 0, Math.PI * 2);
+            vctx.stroke();
           }
           // Visible force field on other pilots
           if (p.is_charging_shield && (p.shield_charge || 0) > 0) {
