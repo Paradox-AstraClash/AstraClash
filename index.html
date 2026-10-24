@@ -419,8 +419,14 @@
       ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
       : null;
 
+    // Match Paradox supabase-client.js: Supabase rejects example.com (no MX).
+    // Users never see this email — only username + password + display name.
+    const AUTH_EMAIL_DOMAIN = "gmail.com";
+    function normalizeHandle(handle) {
+      return String(handle || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+    }
     function usernameToEmail(username) {
-      return String(username || "").trim().toLowerCase() + "@example.com";
+      return normalizeHandle(username) + "@" + AUTH_EMAIL_DOMAIN;
     }
 
     // Local career stats (still device-side; account identity is on Supabase)
@@ -1354,12 +1360,12 @@
         if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= actY && pos.y <= actY + 48) {
           closeMobileKeyboard();
           if (authBusy) return;
-          const u = authNameInput.trim().toLowerCase();
+          const u = normalizeHandle(authNameInput);
           const d = (authDisplayInput.trim() || u);
           const p = authPassInput;
 
-          if (u.length < 2) {
-            authMessage = "USERNAME MUST BE 2+ CHARS";
+          if (u.length < 3) {
+            authMessage = "USERNAME MUST BE 3+ CHARS";
             return;
           }
           if (!/^[a-z0-9_]+$/.test(u)) {
@@ -1982,7 +1988,7 @@
 
         vctx.font = "10px Consolas";
         vctx.fillStyle = GRAY;
-        vctx.fillText("Same account works on Paradox · username only (no email needed)", cx, actY + 55);
+        vctx.fillText("Same account as Paradox · username + password (no email needed)", cx, actY + 55);
 
       } else if (menuMode === "waiting") {
         drawCard(vctx, cx - 200, 180, 400, 260, CYAN);
