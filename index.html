@@ -286,7 +286,7 @@
     const BOOT_TIPS = [
       "Blue ore fuels upgrades. Gold ore fully restores hull and mana.",
       "Gatling Laser is the only weapon that lets you hold fire.",
-      "Missiles deal 1 damage but home onto targets you can see.",
+      "Missiles cost 5 mana each, launch slow then speed up, and can be shot down.",
       "Private rooms can run FFA, 3v3, or 2v2v2 with custom limits.",
       "First to the kill limit — or survive until the timer hits zero.",
       "Press E to raise a Stasis field. Press E again to launch it.",
@@ -367,8 +367,10 @@
 
     // Per-match personal stats
     let matchStats = { damageDealt: 0, damageTaken: 0, oreMined: 0, timeAlive: 0, kills: 0 };
+    let matchEarnedBPs = []; // color blueprint messages earned this match
     function resetMatchStats() {
       matchStats = { damageDealt: 0, damageTaken: 0, oreMined: 0, timeAlive: 0, kills: 0 };
+      matchEarnedBPs = [];
     }
 
     // --- World events (solar flare) ---
@@ -441,13 +443,307 @@
 
     let activePilot = JSON.parse(sessionStorage.getItem("astraclash_current_user") || "null");
     let menuMode = "connecting";
-    let authTab = "register"; // 'register' or 'login'
+    let authTab = "login"; // 'register' or 'login'
     let authNameInput = "";
     let authDisplayInput = "";
     let authPassInput = "";
     let authActiveField = "name"; // 'name' | 'display' | 'pass'
     let authMessage = "";
     let authBusy = false;
+
+    // --- SHOP (shared Paradox coins via profiles.coins / add_coins RPC) ---
+    const SHOP_TITLES = [
+      { id: "ruler", label: "Ruler of the Void" },
+      { id: "ore_baron", label: "Ore Baron" },
+      { id: "void_ace", label: "Void Ace" },
+      { id: "goat", label: "G.O.A.T" },
+      { id: "soul_stealer", label: "Soul Stealer" }
+    ];
+    const SHOP_TRAILS = [
+      { id: "ghost", label: "Ghost", color: "rgba(255,255,255,0.85)", rarity: "common" },
+      { id: "soul", label: "Soul", color: "rgba(0,255,255,0.9)", rarity: "uncommon" },
+      { id: "laser", label: "Laser", color: "rgba(255,40,60,0.95)", rarity: "rare" }
+    ];
+    // Colors with a `price` are bought outright with coins (no blueprints).
+    // Colors with a `drop` weight are earn-only: blueprints drop from matches/contracts,
+    // and a higher weight = more common. void_black is ~8x rarer than the next rarest.
+    const SHOP_COLORS = [
+      { id: "void_black", label: "Void Black", rgb: "rgb(40, 42, 55)", drop: 1 },
+      { id: "silver", label: "Silver Hull", rgb: "rgb(200, 210, 225)", price: 1500 },
+      { id: "magenta", label: "Hot Magenta", rgb: "rgb(255, 40, 180)", drop: 22 },
+      { id: "teal", label: "Teal Drift", rgb: "rgb(0, 210, 190)", drop: 24 },
+      { id: "ion_white", label: "Ion White", rgb: "rgb(240, 248, 255)", price: 1500 },
+      { id: "amber", label: "Amber Core", rgb: "rgb(255, 160, 50)", drop: 18 },
+      { id: "toxic_lime", label: "Toxic Lime", rgb: "rgb(180, 255, 40)", drop: 15 },
+      { id: "indigo", label: "Deep Indigo", rgb: "rgb(70, 50, 180)", price: 2500 },
+      { id: "blood_rust", label: "Blood Rust", rgb: "rgb(140, 35, 35)", drop: 8 },
+      { id: "plasma_pink", label: "Plasma Pink", rgb: "rgb(255, 120, 200)", drop: 12 },
+      { id: "copper", label: "Copper", rgb: "rgb(200, 110, 70)", price: 2000 },
+      { id: "frost", label: "Frost Blue", rgb: "rgb(150, 210, 255)", price: 2000 }
+    ];
+    const SHOP_COLOR_BP_NEEDED = 5;   // blueprints required per color
+    // Earn-only color blueprint drop chances (one weighted roll per event)
+    const COLOR_BP_DROP_KILL = 0.05;     // each kill you score
+    const COLOR_BP_DROP_WIN = 0.50;      // win a match (alive 60s+)
+    const COLOR_BP_DROP_CONTRACT = 0.30; // claim a daily contract
+    const SHIP_STOCKPILE_BP_TOTAL = 20; // total color BPs for Ship Stockpile badge
+    const SHOP_BLUEPRINTS = [
+      { id: "bp_twin", name: "BP: TWIN CANNONS", desc: "Start with Twin Cannons", cost: 1800, node: "twin_cannons" },
+      { id: "bp_armor", name: "BP: HEAVY ARMOR", desc: "Start with Heavy Plating", cost: 1800, node: "heavy_armor" },
+      { id: "bp_tractor", name: "BP: TRACTOR CORE", desc: "Start with Tractor Core", cost: 1800, node: "tractor_core" },
+      { id: "bp_afterburn", name: "BP: AFTERBURNERS", desc: "Start with Afterburners", cost: 2200, node: "afterburners" },
+      { id: "bp_gatling", name: "BP: GATLING", desc: "Start with Gatling Laser", cost: 2500, node: "rapid_fire" }
+    ];
+    const CONTRACT_POOL = [
+      { id: "kills_3", desc: "Score 3 kills", stat: "kills", target: 3, reward: 120 },
+      { id: "kills_5", desc: "Score 5 kills", stat: "kills", target: 5, reward: 200 },
+      { id: "ore_20", desc: "Mine 20 ore", stat: "ore", target: 20, reward: 100 },
+      { id: "ore_40", desc: "Mine 40 ore", stat: "ore", target: 40, reward: 180 },
+      { id: "dmg_30", desc: "Deal 30 damage", stat: "damage", target: 30, reward: 140 },
+      { id: "survive_180", desc: "Survive 3 minutes", stat: "time", target: 180, reward: 150 },
+      { id: "win_1", desc: "Win a match", stat: "wins", target: 1, reward: 250 }
+    ];
+    const SHOP_CONSUMABLES = [
+      { id: "plusLevel", name: "+1 LEVEL", desc: "Start next match 1 tier ahead", cost: 1000, maxOwn: 1 },
+      { id: "plusLevel2", name: "+2 LEVELS", desc: "Start next match 2 tiers ahead", cost: 2500, maxOwn: 1 },
+      { id: "magnetBoost", name: "ORE MAGNET", desc: "1.5× magnet range next match", cost: 400, maxOwn: 3 },
+      { id: "manaPack", name: "MANA PACK", desc: "Start with full mana", cost: 300, maxOwn: 5 },
+      { id: "hull", name: "REINFORCED HULL", desc: "+2 max HP at spawn", cost: 600, maxOwn: 3 },
+      { id: "thrusters", name: "QUICK THRUSTERS", desc: "+15% move speed next match", cost: 500, maxOwn: 3 },
+      { id: "missileBattery", name: "MISSILE BATTERY", desc: "First 5 missiles free", cost: 700, maxOwn: 3 },
+      { id: "secondWind", name: "SECOND WIND", desc: "Once: heal 3 HP under 2 HP", cost: 800, maxOwn: 2 },
+      { id: "killStreak", name: "KILL STREAK CHARM", desc: "+50% XP on first 3 kills", cost: 900, maxOwn: 2 }
+    ];
+    function defaultShopData() {
+      return {
+        inv: {
+          plusLevel: 0, plusLevel2: 0, magnetBoost: 0, manaPack: 0, hull: 0,
+          thrusters: 0, missileBattery: 0, secondWind: 0, killStreak: 0,
+          titles: [], trails: [], colors: [], blueprints: [], colorBlueprints: {},
+          killBadge: false, shipStockpile: false, shipColor: false
+        },
+        armed: {},
+        activeTitle: null,
+        activeTrail: null,
+        activeColor: null,
+        shipColorHex: null,
+        colorBpTotal: 0
+      };
+    }
+    function shopStorageKey() {
+      const u = activePilot && (activePilot.username || activePilot.handle);
+      return u ? ("astraclash_shop_" + u) : null;
+    }
+    function loadShop() {
+      const key = shopStorageKey();
+      if (!key) return defaultShopData();
+      try {
+        const raw = JSON.parse(localStorage.getItem(key) || "null");
+        if (!raw || typeof raw !== "object") return defaultShopData();
+        const d = defaultShopData();
+        d.inv = { ...d.inv, ...(raw.inv || {}) };
+        d.inv.titles = Array.isArray(raw.inv && raw.inv.titles) ? raw.inv.titles : [];
+        d.inv.trails = Array.isArray(raw.inv && raw.inv.trails) ? raw.inv.trails : [];
+        d.inv.colors = Array.isArray(raw.inv && raw.inv.colors) ? raw.inv.colors : [];
+        d.inv.blueprints = Array.isArray(raw.inv && raw.inv.blueprints) ? raw.inv.blueprints : [];
+        d.inv.colorBlueprints = (raw.inv && raw.inv.colorBlueprints && typeof raw.inv.colorBlueprints === "object")
+          ? raw.inv.colorBlueprints : {};
+        d.inv.shipStockpile = !!(raw.inv && raw.inv.shipStockpile);
+        d.armed = raw.armed && typeof raw.armed === "object" ? raw.armed : {};
+        d.activeTitle = raw.activeTitle || null;
+        d.activeTrail = raw.activeTrail || null;
+        d.activeColor = raw.activeColor || null;
+        d.shipColorHex = raw.shipColorHex || null;
+        d.colorBpTotal = Number(raw.colorBpTotal) || 0;
+        if (d.activeColor) {
+          const col = SHOP_COLORS.find(c => c.id === d.activeColor);
+          if (col) d.shipColorHex = col.rgb;
+        }
+        return d;
+      } catch (e) { return defaultShopData(); }
+    }
+    function saveShop(data) {
+      const key = shopStorageKey();
+      if (!key) return;
+      try { localStorage.setItem(key, JSON.stringify(data)); } catch (e) {}
+    }
+    let shopData = defaultShopData();
+    let shopTab = "boosts"; // boosts | trails | titles | colors | contracts | blueprints
+    let shopMessage = "";
+    let shopBusy = false;
+    let shopScroll = 0;
+
+    async function refreshCoins() {
+      if (!sb || !activePilot) return;
+      try {
+        const { data } = await getMyProfileSafe();
+        if (data && Number.isFinite(Number(data.coins))) {
+          activePilot.coins = Number(data.coins);
+          sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+        }
+      } catch (e) {}
+    }
+    async function getMyProfileSafe() {
+      if (!sb) return { data: null };
+      const { data: { user } } = await sb.auth.getUser();
+      if (!user) return { data: null };
+      return await sb.from("profiles").select("*").eq("id", user.id).single();
+    }
+    async function addCoinsDelta(amount) {
+      if (!sb || !activePilot || !activePilot.id) {
+        return { error: { message: "Sign in required" } };
+      }
+      const { data, error } = await sb.rpc("add_coins", {
+        p_user_id: activePilot.id,
+        p_amount: amount
+      });
+      if (!error && data !== null && data !== undefined) {
+        activePilot.coins = Number(data);
+        sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+      }
+      return { data, error };
+    }
+    function getCoins() {
+      return (activePilot && Number.isFinite(Number(activePilot.coins))) ? Number(activePilot.coins) : 0;
+    }
+    function tierFromXp(xp) {
+      let t = 0;
+      const x = Number(xp) || 0;
+      for (let i = 1; i < TIER_XP_THRESHOLDS.length; i++) {
+        if (x >= TIER_XP_THRESHOLDS[i]) t = i;
+      }
+      return t;
+    }
+    function rollRandomTrail() {
+      const r = Math.random();
+      if (r < 0.55) return "ghost";
+      if (r < 0.85) return "soul";
+      return "laser";
+    }
+    function rollRandomTitle() {
+      return SHOP_TITLES[Math.floor(Math.random() * SHOP_TITLES.length)].id;
+    }
+    function trailColorFor(id) {
+      const t = SHOP_TRAILS.find(x => x.id === id);
+      return t ? t.color : null;
+    }
+    function titleLabel(id) {
+      const t = SHOP_TITLES.find(x => x.id === id);
+      return t ? t.label : null;
+    }
+    function reloadShopForPilot() {
+      shopData = loadShop();
+    }
+    function colorBpCount(colorId) {
+      return (shopData.inv.colorBlueprints && shopData.inv.colorBlueprints[colorId]) || 0;
+    }
+    /** Weighted random pick among earn-only colors (rarer colors have a lower `drop` weight). */
+    function rollEarnableColor() {
+      const pool = SHOP_COLORS.filter(c => !c.price && c.drop > 0);
+      const total = pool.reduce((sum, c) => sum + c.drop, 0);
+      let r = Math.random() * total;
+      for (const c of pool) { r -= c.drop; if (r < 0) return c.id; }
+      return pool[pool.length - 1].id;
+    }
+    /** Roll for an earned color blueprint. Returns a message string if one dropped, else null. */
+    function tryEarnColorBlueprint(chance) {
+      if (!activePilot || !shopStorageKey()) return null;
+      if (Math.random() >= chance) return null;
+      const g = grantColorBlueprint();
+      const col = SHOP_COLORS.find(c => c.id === g.colorId);
+      const name = (col ? col.label : g.colorId).toUpperCase();
+      let msg = g.unlockedColor ? `COLOR UNLOCKED: ${name}!` : `COLOR BP: ${name} (${g.count}/${SHOP_COLOR_BP_NEEDED})`;
+      if (g.stockpile) msg += " · SHIP STOCKPILE!";
+      return msg;
+    }
+    /** Grant one color blueprint. Returns { colorId, unlockedColor, stockpile } */
+    function grantColorBlueprint(forcedId) {
+      if (!shopData.inv.colorBlueprints) shopData.inv.colorBlueprints = {};
+      const earnable = SHOP_COLORS.filter(c => !c.price && c.drop > 0);
+      const ids = earnable.map(c => c.id);
+      const colorId = forcedId && ids.includes(forcedId) ? forcedId : rollEarnableColor();
+      const prev = shopData.inv.colorBlueprints[colorId] || 0;
+      const next = prev + 1;
+      shopData.inv.colorBlueprints[colorId] = next;
+      shopData.colorBpTotal = (shopData.colorBpTotal || 0) + 1;
+      let unlockedColor = false;
+      if (next >= SHOP_COLOR_BP_NEEDED && !shopData.inv.colors.includes(colorId)) {
+        shopData.inv.colors.push(colorId);
+        unlockedColor = true;
+      }
+      let stockpile = false;
+      if ((shopData.colorBpTotal || 0) >= SHIP_STOCKPILE_BP_TOTAL && !shopData.inv.shipStockpile) {
+        shopData.inv.shipStockpile = true;
+        stockpile = true;
+      }
+      saveShop(shopData);
+      return { colorId, unlockedColor, stockpile, count: next, total: shopData.colorBpTotal };
+    }
+    function contractDayKey() {
+      const d = new Date();
+      return d.getUTCFullYear() + "-" + (d.getUTCMonth()+1) + "-" + d.getUTCDate();
+    }
+    function loadContracts() {
+      const key = shopStorageKey();
+      if (!key) return { day: contractDayKey(), list: [], progress: {}, claimed: {} };
+      try {
+        const raw = JSON.parse(localStorage.getItem(key + "_contracts") || "null");
+        if (!raw || raw.day !== contractDayKey()) return rollDailyContracts();
+        return raw;
+      } catch (e) { return rollDailyContracts(); }
+    }
+    function saveContracts(c) {
+      const key = shopStorageKey();
+      if (!key) return;
+      try { localStorage.setItem(key + "_contracts", JSON.stringify(c)); } catch (e) {}
+    }
+    function rollDailyContracts() {
+      // deterministic-ish shuffle from day string
+      const day = contractDayKey();
+      let seed = 0;
+      for (let i = 0; i < day.length; i++) seed = (seed * 31 + day.charCodeAt(i)) >>> 0;
+      const pool = CONTRACT_POOL.slice();
+      for (let i = pool.length - 1; i > 0; i--) {
+        seed = (seed * 1103515245 + 12345) >>> 0;
+        const j = seed % (i + 1);
+        const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+      }
+      const list = pool.slice(0, 3).map(c => c.id);
+      const data = { day, list, progress: {}, claimed: {} };
+      saveContracts(data);
+      return data;
+    }
+    let contractData = { day: "", list: [], progress: {}, claimed: {} };
+    function reloadContracts() {
+      contractData = loadContracts();
+    }
+    function trackContract(stat, amount) {
+      if (!activePilot) return;
+      if (!contractData || contractData.day !== contractDayKey()) reloadContracts();
+      for (const id of contractData.list) {
+        const def = CONTRACT_POOL.find(c => c.id === id);
+        if (!def || def.stat !== stat) continue;
+        if (contractData.claimed[id]) continue;
+        contractData.progress[id] = (contractData.progress[id] || 0) + amount;
+        saveContracts(contractData);
+      }
+    }
+    async function claimContract(id) {
+      const def = CONTRACT_POOL.find(c => c.id === id);
+      if (!def) return;
+      const prog = contractData.progress[id] || 0;
+      if (prog < def.target) { shopMessage = "NOT COMPLETE"; return; }
+      if (contractData.claimed[id]) { shopMessage = "ALREADY CLAIMED"; return; }
+      shopBusy = true;
+      const { error } = await addCoinsDelta(def.reward);
+      if (error) { shopMessage = "CLAIM FAILED"; shopBusy = false; return; }
+      contractData.claimed[id] = true;
+      saveContracts(contractData);
+      const bpMsg = tryEarnColorBlueprint(COLOR_BP_DROP_CONTRACT);
+      shopMessage = bpMsg ? `+${def.reward}c · ${bpMsg}` : `+${def.reward} COINS`;
+      shopBusy = false;
+      refreshCoins();
+    }
     
     let statusMessage = "Booting up servers...";
     let statusColor = CYAN;
@@ -489,6 +785,7 @@
           if (pilot) {
             activePilot = pilot;
             sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+            reloadShopForPilot();
             // Merge local career shell
             const accs = getAccounts();
             if (!accs[pilot.username]) {
@@ -511,13 +808,96 @@
     let myId = 1; let roomCode = ""; let inLobby = true;
     let pendingJoin = false; // true while waiting for the server to accept a join_room
 
+    function applyArmedShopBoosts() {
+      if (!myShip) return;
+      const armed = (shopData && shopData.armed) ? shopData.armed : {};
+      const inv = shopData.inv || {};
+      // +1 / +2 level: grant XP threshold so upgrades are available
+      let levels = 0;
+      if (armed.plusLevel2 && (inv.plusLevel2 || 0) > 0) {
+        levels = 2; inv.plusLevel2 -= 1; armed.plusLevel2 = false;
+      } else if (armed.plusLevel && (inv.plusLevel || 0) > 0) {
+        levels = 1; inv.plusLevel -= 1; armed.plusLevel = false;
+      }
+      if (levels > 0 && levels < TIER_XP_THRESHOLDS.length) {
+        myShip.xp = Math.max(myShip.xp || 0, TIER_XP_THRESHOLDS[levels]);
+        pushKillFeed(`SHOP BOOST: +${levels} LEVEL START`);
+      }
+      if (armed.magnetBoost && (inv.magnetBoost || 0) > 0) {
+        inv.magnetBoost -= 1; armed.magnetBoost = false;
+        myShip.magnet_range = Math.floor(myShip.magnet_range * 1.5);
+        myShip.orb_accel = Math.min(0.35, myShip.orb_accel * 1.3);
+      }
+      if (armed.manaPack && (inv.manaPack || 0) > 0) {
+        inv.manaPack -= 1; armed.manaPack = false;
+        myShip.mana = myShip.max_mana;
+      }
+      if (armed.hull && (inv.hull || 0) > 0) {
+        inv.hull -= 1; armed.hull = false;
+        myShip.max_hp += 2; myShip.hp += 2;
+      }
+      if (armed.thrusters && (inv.thrusters || 0) > 0) {
+        inv.thrusters -= 1; armed.thrusters = false;
+        myShip.move_speed *= 1.15;
+      }
+      if (armed.missileBattery && (inv.missileBattery || 0) > 0) {
+        inv.missileBattery -= 1; armed.missileBattery = false;
+        myShip._freeMissiles = 5;
+      }
+      if (armed.secondWind && (inv.secondWind || 0) > 0) {
+        inv.secondWind -= 1; armed.secondWind = false;
+        myShip._secondWind = true;
+      }
+      if (armed.killStreak && (inv.killStreak || 0) > 0) {
+        inv.killStreak -= 1; armed.killStreak = false;
+        shopData._killStreakLeft = 3;
+      } else {
+        shopData._killStreakLeft = 0;
+      }
+      // Permanent module blueprints — apply upgrade nodes at match start
+      const bps = (shopData.inv && shopData.inv.blueprints) ? shopData.inv.blueprints : [];
+      for (const bpId of bps) {
+        const bp = SHOP_BLUEPRINTS.find(b => b.id === bpId);
+        if (!bp || !UPGRADE_TREE[bp.node]) continue;
+        const node = UPGRADE_TREE[bp.node];
+        if (node.apply) {
+          try { node.apply(myShip); } catch (e) {}
+          myShip.current_node = bp.node;
+          if ((myShip.tier || 0) < 1) myShip.tier = 1;
+          if ((myShip.xp || 0) < TIER_XP_THRESHOLDS[1]) myShip.xp = TIER_XP_THRESHOLDS[1];
+        }
+      }
+      shopData.inv = inv;
+      shopData.armed = armed;
+      saveShop(shopData);
+    }
     function setLobbyState(val) {
       const wasLobby = inLobby;
       inLobby = val;
       if (!val) {
         menuMode = "in_game";
         // Only reset the match when actually entering a game, never mid-match
-        if (wasLobby) resetMatch();
+        if (wasLobby) {
+          resetMatch();
+          if (!myShip) initMyShip();
+          applyArmedShopBoosts();
+          matchWagerPaid = false;
+          const fee = matchConfig.entryFee || 0;
+          if (fee > 0 && activePilot && activePilot.id) {
+            if (getCoins() < fee) {
+              statusMessage = "Not enough coins for entry fee.";
+              statusColor = RAINBOW[1];
+            } else {
+              addCoinsDelta(-fee).then(() => {
+                matchWagerPaid = true;
+                pushKillFeed(`WAGER PAID: ${fee} COINS`);
+                refreshCoins();
+              });
+            }
+          }
+          // reset match contract tracking helpers
+          if (typeof reloadContracts === "function") reloadContracts();
+        }
       }
       updateTouchUIVisibility();
     }
@@ -621,6 +1001,12 @@
         spawnFloatText(myShip.world_x, myShip.world_y, `-${Math.round(amount)}`, "rgb(255, 90, 90)");
       }
       myShip.hp = Math.max(0, (Number.isFinite(myShip.hp) ? myShip.hp : 6) - amount);
+      if (myShip.hp > 0 && myShip.hp < 2 && myShip._secondWind) {
+        myShip._secondWind = false;
+        myShip.hp = Math.min(myShip.max_hp, myShip.hp + 3);
+        spawnFloatText(myShip.world_x, myShip.world_y - 24, "SECOND WIND", RAINBOW[4]);
+        pushKillFeed("SECOND WIND — HULL PATCHED");
+      }
       if (myShip.hp <= 0) wipeShipOnDeath();
     }
 
@@ -759,6 +1145,7 @@
                 max_hp: incomingMax,
                 alive: incomingAlive, 
                 xp: Number.isFinite(Number(s.xp)) ? Number(s.xp) : 0, 
+                tier: Number.isFinite(Number(s.tier)) ? Number(s.tier) : tierFromXp(Number(s.xp) || 0),
                 kills: Number.isFinite(Number(s.kills)) ? Number(s.kills) : (prev && prev.kills) || 0, 
                 stasis: Boolean(s.stasis), 
                 is_charging_shield: Boolean(s.is_charging_shield),
@@ -917,6 +1304,7 @@
                 dmg: Number.isFinite(Number(rL.dmg)) ? Number(rL.dmg) : 1, 
                 pierce: Boolean(rL.pierce),
                 speed: Number.isFinite(Number(rL.speed)) ? Number(rL.speed) : 14.0, 
+                speed_max: Number.isFinite(Number(rL.speed_max)) ? Number(rL.speed_max) : (Boolean(rL.is_missile) ? 14.0 : undefined),
                 is_missile: Boolean(rL.is_missile), 
                 is_mine: Boolean(rL.is_mine), 
                 boomerang: Boolean(rL.boomerang), 
@@ -950,8 +1338,10 @@
       useTimer: true,
       useKills: true,
       durationSec: 8 * 60,
-      killLimit: 10      // 0 = unlimited
+      killLimit: 10,     // 0 = unlimited
+      entryFee: 0        // wager coins (private matches)
     };
+    let matchWagerPaid = false;
     let matchTimeLeft = matchConfig.durationSec;
     let matchOver = false;
     let matchResults = null;
@@ -990,6 +1380,10 @@
       let kl = Number(c.killLimit);
       if (!Number.isFinite(kl) || kl < 0) kl = 0;
       c.killLimit = Math.floor(kl); // 0 = unlimited
+      let fee = Number(c.entryFee);
+      if (!Number.isFinite(fee) || fee < 0) fee = 0;
+      const FEE_OPTS = [0, 50, 100, 250, 500];
+      c.entryFee = FEE_OPTS.includes(fee) ? fee : 0;
       return c;
     }
 
@@ -1056,6 +1450,39 @@
       }
       statusMessage = reason || "Match complete.";
       statusColor = CYAN;
+      // Contract progress snapshot
+      try {
+        /* kills tracked live */
+        /* ore tracked live */
+        /* damage tracked live */
+        trackContract("time", Math.floor(matchStats.timeAlive || 0));
+        const iWon = matchResults && matchResults[0] && (
+          (isTeamMode() && sameTeam(myId, matchResults[0].members ? matchResults[0].members[0].id : myId)) ||
+          (!isTeamMode() && Number(matchResults[0].id) === Number(myId))
+        );
+        // simpler win check
+        let won = false;
+        if (!isTeamMode() && matchResults[0] && Number(matchResults[0].id) === Number(myId)) won = true;
+        if (isTeamMode() && matchResults[0] && matchResults[0].members) {
+          won = matchResults[0].members.some(m => Number(m.id) === Number(myId));
+        }
+        if (won) trackContract("wins", 1);
+        // Earned color blueprint drop for winning (must have been in the match 60s+)
+        if (won && (matchStats.timeAlive || 0) >= 60) {
+          const bpMsg = tryEarnColorBlueprint(COLOR_BP_DROP_WIN);
+          if (bpMsg) { matchEarnedBPs.push(bpMsg); pushKillFeed(bpMsg); }
+        }
+        // Wager payout: winner takes entryFee * playerCount
+        const fee = matchConfig.entryFee || 0;
+        if (won && fee > 0 && matchWagerPaid) {
+          const players = 1 + Object.keys(remoteShips).length;
+          const pot = fee * Math.max(2, players);
+          addCoinsDelta(pot).then(() => {
+            pushKillFeed(`WAGER WON: +${pot} COINS`);
+            refreshCoins();
+          });
+        }
+      } catch (e) { console.warn(e); }
     }
 
     function returnToLobbyFromMatch() {
@@ -1152,6 +1579,7 @@
       rp.hp = Math.max(0, (Number.isFinite(rp.hp) ? rp.hp : 6) - amount);
       if (amount > 0 && wasAlive) {
         matchStats.damageDealt += amount;
+        trackContract("damage", amount);
         spawnFloatText(rp.world_x, rp.world_y, `-${Math.round(amount)}`, "rgb(255, 220, 80)");
       }
       if (rp.hp <= 0) {
@@ -1161,7 +1589,38 @@
           myShip.kills = (myShip.kills || 0) + 1;
           matchStats.kills = myShip.kills;
           recordAccountStat("kills", 1);
-          pushKillFeed(`YOU DESTROYED A RIVAL`);
+          trackContract("kills", 1);
+          // Earned color blueprint drop (5% per kill)
+          const killBp = tryEarnColorBlueprint(COLOR_BP_DROP_KILL);
+          if (killBp) { matchEarnedBPs.push(killBp); pushKillFeed(killBp); }
+          // Coins: 10 per victim level (tier). Min 10 if they had any XP path.
+          const vTier = Number.isFinite(Number(rp.tier)) ? Number(rp.tier) : tierFromXp(rp.xp);
+          const coinGain = 10 * Math.max(1, vTier || 0);
+          // If tier 0, still give 10 for a kill
+          const coinsAwarded = vTier <= 0 ? 10 : coinGain;
+          if (activePilot && activePilot.id) {
+            addCoinsDelta(coinsAwarded).then(() => {
+              spawnFloatText(rp.world_x, rp.world_y - 36, `+${coinsAwarded} COINS`, ORE_GOLD);
+            }).catch(() => {});
+          }
+          // Steal half the XP they had collected
+          const stolenXp = Math.floor((Number(rp.xp) || 0) * 0.5);
+          if (stolenXp > 0) {
+            myShip.xp = (myShip.xp || 0) + stolenXp;
+            spawnFloatText(rp.world_x, rp.world_y - 52, `+${stolenXp} XP`, XP_BLUE);
+            recordAccountStat("career_xp", stolenXp);
+          }
+          // Kill streak charm: first 3 kills give +50% of stolen XP extra
+          if (shopData && shopData._killStreakLeft > 0 && stolenXp > 0) {
+            const bonus = Math.floor(stolenXp * 0.5);
+            myShip.xp += bonus;
+            shopData._killStreakLeft -= 1;
+            if (bonus > 0) spawnFloatText(rp.world_x, rp.world_y - 68, `STREAK +${bonus} XP`, RAINBOW[3]);
+          }
+          let badge = "";
+          if (shopData && shopData.inv && shopData.inv.killBadge) badge += " ◆";
+          if (shopData && shopData.inv && shopData.inv.shipStockpile) badge += " ■";
+          pushKillFeed(`YOU DESTROYED A RIVAL` + badge);
           spawnFloatText(rp.world_x, rp.world_y - 20, "KILL", "rgb(255, 80, 80)");
         }
       }
@@ -1186,7 +1645,10 @@
       const startX = Number((400.0 * Math.cos(spawnRad)).toFixed(2));
       const startY = Number((400.0 * Math.sin(spawnRad)).toFixed(2));
 
-      const pilotName = activePilot ? activePilot.username : `PILOT ${safeId}`;
+      reloadShopForPilot();
+      const baseName = activePilot ? (activePilot.display_name || activePilot.username) : `PILOT ${safeId}`;
+      const tLabel = (shopData && shopData.activeTitle) ? titleLabel(shopData.activeTitle) : null;
+      const pilotName = tLabel ? `${baseName} · ${tLabel}` : baseName;
 
       myShip = {
         id: safeId, 
@@ -1195,7 +1657,7 @@
         vx: 0.0, 
         vy: 0.0, 
         angle: (angleOffset + 180.0) % 360.0, 
-        color: RAINBOW[safeId] || RAINBOW[1],
+        color: (shopData && shopData.shipColorHex) ? shopData.shipColorHex : (RAINBOW[safeId] || RAINBOW[1]),
         hp: 6, 
         max_hp: 6, 
         alive: true, 
@@ -1428,6 +1890,9 @@
                 initMyShip();
                 menuMode = "main";
                 statusMessage = `Welcome to AstraClash, ${activePilot.display_name}.`;
+                reloadShopForPilot();
+                reloadContracts();
+                refreshCoins();
                 statusColor = CYAN;
               } else {
                 const { data, error } = await sb.auth.signInWithPassword({
@@ -1455,6 +1920,9 @@
                 initMyShip();
                 menuMode = "main";
                 statusMessage = `Welcome back, ${activePilot.display_name}.`;
+                reloadShopForPilot();
+                reloadContracts();
+                refreshCoins();
                 statusColor = CYAN;
               }
             } catch (err) {
@@ -1465,19 +1933,25 @@
           })();
         }
       } else if (menuMode === "main") {
-        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 185 && pos.y <= 233) {
+        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 175 && pos.y <= 219) {
           if (!isConnected) connectWs();
           applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
           sendMsg({ action: "list_public" }); 
           statusMessage = "Searching active public games..."; 
           statusColor = RAINBOW[3];
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 250 && pos.y <= 298) {
+        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 230 && pos.y <= 274) {
           menuMode = "host_private"; passwordInput = ""; activeInput = "pass";
           openMobileKeyboard("roomPass");
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 315 && pos.y <= 363) {
+        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 285 && pos.y <= 329) {
           menuMode = "join_private"; roomCodeInput = ""; passwordInput = ""; activeInput = "code";
           openMobileKeyboard("roomCode");
-        } else if (lastRoomCode && pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 380 && pos.y <= 428) {
+        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 340 && pos.y <= 384) {
+          reloadShopForPilot();
+          refreshCoins();
+          shopTab = "boosts";
+          shopMessage = "";
+          menuMode = "shop";
+        } else if (lastRoomCode && pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 395 && pos.y <= 439) {
           if (!isConnected) connectWs();
           roomCodeInput = lastRoomCode;
           passwordInput = lastRoomPass || "";
@@ -1497,7 +1971,253 @@
           if (sb) sb.auth.signOut().catch(() => {});
           openMobileKeyboard("authName");
         }
+      } else if (menuMode === "shop") {
+        // Tabs
+        if (pos.y >= 148 && pos.y <= 176) {
+          if (pos.x >= cx - 230 && pos.x <= cx - 155) { shopTab = "boosts"; shopMessage = ""; }
+          else if (pos.x >= cx - 150 && pos.x <= cx - 75) { shopTab = "trails"; shopMessage = ""; }
+          else if (pos.x >= cx - 70 && pos.x <= cx + 5) { shopTab = "titles"; shopMessage = ""; }
+          else if (pos.x >= cx + 10 && pos.x <= cx + 85) { shopTab = "colors"; shopMessage = ""; }
+          else if (pos.x >= cx + 90 && pos.x <= cx + 165) { shopTab = "contracts"; shopMessage = ""; reloadContracts(); }
+          else if (pos.x >= cx + 170 && pos.x <= cx + 245) { shopTab = "blueprints"; shopMessage = ""; }
+        }
+        // Back
+        if (pos.x >= cx - 80 && pos.x <= cx + 80 && pos.y >= 520 && pos.y <= 552) {
+          menuMode = "main";
+          shopMessage = "";
+        }
+        if (shopBusy) { /* ignore */ }
+        else if (shopTab === "boosts") {
+          const items = SHOP_CONSUMABLES;
+          for (let i = 0; i < items.length; i++) {
+            const rowY = 160 + i * 36;
+            const it = items[i];
+            const owned = (shopData.inv[it.id] || 0);
+            // Buy button right side
+            if (pos.x >= cx + 95 && pos.x <= cx + 175 && pos.y >= rowY && pos.y <= rowY + 30) {
+              if (owned >= it.maxOwn) { shopMessage = "MAX OWNED"; }
+              else if (getCoins() < it.cost) { shopMessage = "NOT ENOUGH COINS"; }
+              else {
+                shopBusy = true; shopMessage = "BUYING...";
+                (async () => {
+                  const { error } = await addCoinsDelta(-it.cost);
+                  if (error) { shopMessage = (error.message || "BUY FAILED").toUpperCase().slice(0, 40); shopBusy = false; return; }
+                  shopData.inv[it.id] = owned + 1;
+                  saveShop(shopData);
+                  shopMessage = `BOUGHT ${it.name}`;
+                  shopBusy = false;
+                  refreshCoins();
+                })();
+              }
+            }
+            // Arm toggle
+            if (pos.x >= cx + 180 && pos.x <= cx + 230 && pos.y >= rowY && pos.y <= rowY + 30) {
+              if (owned <= 0) { shopMessage = "BUY FIRST"; }
+              else {
+                const on = !!shopData.armed[it.id];
+                // only one of plusLevel / plusLevel2 armed
+                if (!on && (it.id === "plusLevel" || it.id === "plusLevel2")) {
+                  shopData.armed.plusLevel = false;
+                  shopData.armed.plusLevel2 = false;
+                }
+                shopData.armed[it.id] = !on;
+                saveShop(shopData);
+                shopMessage = shopData.armed[it.id] ? `ARMED: ${it.name}` : `DISARMED: ${it.name}`;
+              }
+            }
+          }
+        } else if (shopTab === "trails") {
+          // Random trail 500
+          if (pos.x >= cx - 200 && pos.x <= cx - 20 && pos.y >= 170 && pos.y <= 210) {
+            if (getCoins() < 500) shopMessage = "NEED 500 COINS";
+            else {
+              shopBusy = true; shopMessage = "ROLLING...";
+              (async () => {
+                const { error } = await addCoinsDelta(-500);
+                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                const id = rollRandomTrail();
+                if (!shopData.inv.trails.includes(id)) shopData.inv.trails.push(id);
+                shopData.activeTrail = id;
+                saveShop(shopData);
+                shopMessage = `ROLLED ${id.toUpperCase()} TRAIL!`;
+                shopBusy = false; refreshCoins();
+              })();
+            }
+          }
+          const picks = [
+            { id: "ghost", cost: 2000, x0: cx - 200, y0: 230 },
+            { id: "soul", cost: 2250, x0: cx - 200, y0: 280 },
+            { id: "laser", cost: 2750, x0: cx - 200, y0: 330 }
+          ];
+          for (const p of picks) {
+            if (pos.x >= p.x0 && pos.x <= p.x0 + 180 && pos.y >= p.y0 && pos.y <= p.y0 + 36) {
+              if (shopData.inv.trails.includes(p.id)) {
+                shopData.activeTrail = p.id; saveShop(shopData); shopMessage = `EQUIPPED ${p.id.toUpperCase()}`;
+              } else if (getCoins() < p.cost) shopMessage = "NOT ENOUGH COINS";
+              else {
+                shopBusy = true;
+                (async () => {
+                  const { error } = await addCoinsDelta(-p.cost);
+                  if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                  if (!shopData.inv.trails.includes(p.id)) shopData.inv.trails.push(p.id);
+                  shopData.activeTrail = p.id; saveShop(shopData);
+                  shopMessage = `UNLOCKED ${p.id.toUpperCase()}`;
+                  shopBusy = false; refreshCoins();
+                })();
+              }
+            }
+          }
+          // Ship color 1500
+          if (pos.x >= cx + 20 && pos.x <= cx + 200 && pos.y >= 230 && pos.y <= 270) {
+            if (shopData.inv.shipColor) { shopMessage = "ALREADY OWNED"; }
+            else if (getCoins() < 1500) shopMessage = "NEED 1500 COINS";
+            else {
+              shopBusy = true;
+              (async () => {
+                const { error } = await addCoinsDelta(-1500);
+                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                shopData.inv.shipColor = true;
+                const palette = ["rgb(255,80,80)","rgb(255,180,40)","rgb(80,255,120)","rgb(80,180,255)","rgb(200,80,255)","rgb(255,80,200)"];
+                shopData.shipColorHex = palette[Math.floor(Math.random() * palette.length)];
+                saveShop(shopData); shopMessage = "SHIP COLOR UNLOCKED"; shopBusy = false; refreshCoins();
+              })();
+            }
+          }
+          // Kill badge 2000
+          if (pos.x >= cx + 20 && pos.x <= cx + 200 && pos.y >= 290 && pos.y <= 330) {
+            if (shopData.inv.killBadge) shopMessage = "ALREADY OWNED";
+            else if (getCoins() < 2000) shopMessage = "NEED 2000 COINS";
+            else {
+              shopBusy = true;
+              (async () => {
+                const { error } = await addCoinsDelta(-2000);
+                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                shopData.inv.killBadge = true; saveShop(shopData);
+                shopMessage = "KILL BADGE UNLOCKED"; shopBusy = false; refreshCoins();
+              })();
+            }
+          }
+        } else if (shopTab === "titles") {
+          // Random title 800
+          if (pos.x >= cx - 180 && pos.x <= cx + 180 && pos.y >= 170 && pos.y <= 210) {
+            if (getCoins() < 800) shopMessage = "NEED 800 COINS";
+            else {
+              shopBusy = true;
+              (async () => {
+                const { error } = await addCoinsDelta(-800);
+                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                const id = rollRandomTitle();
+                if (!shopData.inv.titles.includes(id)) shopData.inv.titles.push(id);
+                shopData.activeTitle = id; saveShop(shopData);
+                shopMessage = `ROLLED: ${titleLabel(id)}`;
+                shopBusy = false; refreshCoins();
+              })();
+            }
+          }
+          for (let i = 0; i < SHOP_TITLES.length; i++) {
+            const t = SHOP_TITLES[i];
+            const rowY = 230 + i * 40;
+            if (pos.x >= cx - 180 && pos.x <= cx + 180 && pos.y >= rowY && pos.y <= rowY + 34) {
+              if (shopData.inv.titles.includes(t.id)) {
+                shopData.activeTitle = t.id; saveShop(shopData); shopMessage = `TITLE: ${t.label}`;
+              } else if (getCoins() < 2500) shopMessage = "NEED 2500 TO PICK";
+              else {
+                shopBusy = true;
+                (async () => {
+                  const { error } = await addCoinsDelta(-2500);
+                  if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                  if (!shopData.inv.titles.includes(t.id)) shopData.inv.titles.push(t.id);
+                  shopData.activeTitle = t.id; saveShop(shopData);
+                  shopMessage = `UNLOCKED: ${t.label}`;
+                  shopBusy = false; refreshCoins();
+                })();
+              }
+            }
+          }
+
+        } else if (shopTab === "colors") {
+          // Equip / buy colors
+          for (let i = 0; i < SHOP_COLORS.length; i++) {
+            const col = SHOP_COLORS[i];
+            const colRow = Math.floor(i / 2);
+            const colCol = i % 2;
+            const x0 = cx - 220 + colCol * 230;
+            const y0 = 238 + colRow * 36; // matches the drawn card positions
+            if (pos.x >= x0 && pos.x <= x0 + 220 && pos.y >= y0 && pos.y <= y0 + 32) {
+              const own = shopData.inv.colors.includes(col.id);
+              if (own) {
+                shopData.activeColor = col.id;
+                shopData.shipColorHex = col.rgb;
+                saveShop(shopData);
+                shopMessage = `EQUIPPED ${col.label.toUpperCase()}`;
+              } else if (col.price) {
+                // Buyable color: pay coins, no blueprints
+                if (getCoins() < col.price) shopMessage = `NEED ${col.price} COINS`;
+                else {
+                  shopBusy = true; shopMessage = "BUYING...";
+                  (async () => {
+                    const { error } = await addCoinsDelta(-col.price);
+                    if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                    if (!shopData.inv.colors.includes(col.id)) shopData.inv.colors.push(col.id);
+                    shopData.activeColor = col.id;
+                    shopData.shipColorHex = col.rgb;
+                    saveShop(shopData);
+                    shopMessage = `UNLOCKED ${col.label.toUpperCase()}`;
+                    shopBusy = false; refreshCoins();
+                  })();
+                }
+              } else {
+                const n = colorBpCount(col.id);
+                shopMessage = `${col.label.toUpperCase()} ${n}/${SHOP_COLOR_BP_NEEDED} BPS · EARN BY PLAYING`;
+              }
+            }
+          }
+        } else if (shopTab === "contracts") {
+          reloadContracts();
+          for (let i = 0; i < contractData.list.length; i++) {
+            const id = contractData.list[i];
+            const def = CONTRACT_POOL.find(c => c.id === id);
+            if (!def) continue;
+            const rowY = 190 + i * 70;
+            if (pos.x >= cx + 80 && pos.x <= cx + 200 && pos.y >= rowY + 20 && pos.y <= rowY + 50) {
+              claimContract(id);
+            }
+          }
+        } else if (shopTab === "blueprints") {
+          for (let i = 0; i < SHOP_BLUEPRINTS.length; i++) {
+            const bp = SHOP_BLUEPRINTS[i];
+            const rowY = 185 + i * 48;
+            if (pos.x >= cx + 80 && pos.x <= cx + 200 && pos.y >= rowY && pos.y <= rowY + 40) {
+              const own = shopData.inv.blueprints.includes(bp.id);
+              if (own) { shopMessage = "ALREADY OWNED"; }
+              else if (getCoins() < bp.cost) { shopMessage = "NOT ENOUGH COINS"; }
+              else {
+                shopBusy = true;
+                (async () => {
+                  const { error } = await addCoinsDelta(-bp.cost);
+                  if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                  shopData.inv.blueprints.push(bp.id);
+                  saveShop(shopData);
+                  shopMessage = `UNLOCKED ${bp.name}`;
+                  shopBusy = false; refreshCoins();
+                })();
+              }
+            }
+          }
+        }
+
       } else if (menuMode === "host_private") {
+        // Entry fee row
+        if (pos.y >= 455 && pos.y <= 483) {
+          const fees = [0, 50, 100, 250, 500];
+          for (let fi = 0; fi < fees.length; fi++) {
+            const fx = cx - 200 + fi * 82;
+            if (pos.x >= fx && pos.x <= fx + 75) {
+              matchConfig.entryFee = fees[fi];
+              matchConfig = clampMatchConfig(matchConfig);
+            }
+          }
+        }
         // Mode select
         if (pos.y >= 175 && pos.y <= 205) {
           if (pos.x >= cx - 200 && pos.x <= cx - 70) matchConfig.mode = "ffa";
@@ -1568,13 +2288,28 @@
       }
     }
 
+    // Results screen close button (top-right of the results card). Only clicking/tapping
+    // this closes the screen, so a stray Space/Enter/click mid-fight can't skip it.
+    function resultsCloseRect() {
+      return { x: V_WIDTH / 2 + 220 - 36, y: 100 + 8, w: 28, h: 28 };
+    }
+    function hitResultsClose(pos) {
+      const r = resultsCloseRect(); const pad = 6;
+      return pos.x >= r.x - pad && pos.x <= r.x + r.w + pad && pos.y >= r.y - pad && pos.y <= r.y + r.h + pad;
+    }
     canvas.addEventListener("click", (e) => {
-      if (!inLobby && matchOver) { returnToLobbyFromMatch(); return; }
+      if (!inLobby && matchOver) {
+        if (hitResultsClose(getCanvasCoords(e.clientX, e.clientY))) returnToLobbyFromMatch();
+        return;
+      }
       handleMenuClick(getCanvasCoords(e.clientX, e.clientY));
     });
     canvas.addEventListener("touchend", (e) => { 
       if (e.changedTouches && e.changedTouches.length > 0) {
-        if (!inLobby && matchOver) { returnToLobbyFromMatch(); return; }
+        if (!inLobby && matchOver) {
+          if (hitResultsClose(getCanvasCoords(e.changedTouches[0].clientX, e.changedTouches[0].clientY))) returnToLobbyFromMatch();
+          return;
+        }
         if (inLobby) {
           handleMenuClick(getCanvasCoords(e.changedTouches[0].clientX, e.changedTouches[0].clientY)); 
         }
@@ -2019,23 +2754,208 @@
           vctx.fillText(`PILOT: ${activePilot.display_name || activePilot.username}`, cx - 235, 136);
           vctx.fillStyle = WHITE;
           vctx.font = "11px Consolas";
-          vctx.fillText(`CAREER XP: ${activePilot.career_xp || 0}   ASTEROIDS: ${activePilot.asteroids || 0}   MAX TIER: ${activePilot.highest_tier || 0}`, cx - 235, 154);
+          const ttl = (shopData && shopData.activeTitle) ? titleLabel(shopData.activeTitle) : null;
+          vctx.fillText(`COINS: ${getCoins()}   XP: ${activePilot.career_xp || 0}   MAX TIER: ${activePilot.highest_tier || 0}`, cx - 235, 154);
+          if (ttl) {
+            vctx.fillStyle = RAINBOW[3];
+            vctx.font = "10px Consolas";
+            vctx.fillText(ttl, cx - 235, 168);
+          }
+          if (shopData && shopData.inv && shopData.inv.shipStockpile) {
+            vctx.fillStyle = ORE_GOLD;
+            vctx.font = "9px Consolas";
+            vctx.fillText("SHIP STOCKPILE", cx + 80, 154);
+          }
         }
 
         if (menuMode === "main") {
-          const buttons = [ { text: "QUICK PLAY (PUBLIC)", y: 185, col: CYAN }, { text: "HOST PRIVATE ROOM", y: 250, col: WHITE }, { text: "JOIN PRIVATE ROOM", y: 315, col: WHITE } ];
-          if (lastRoomCode) buttons.push({ text: `REJOIN ${lastRoomCode}`, y: 380, col: RAINBOW[3], rejoin: true });
+          const buttons = [
+            { text: "QUICK PLAY (PUBLIC)", y: 175, col: CYAN },
+            { text: "HOST PRIVATE ROOM", y: 230, col: WHITE },
+            { text: "JOIN PRIVATE ROOM", y: 285, col: WHITE },
+            { text: "SHOP", y: 340, col: ORE_GOLD, shop: true }
+          ];
+          if (lastRoomCode) buttons.push({ text: `REJOIN ${lastRoomCode}`, y: 395, col: RAINBOW[3], rejoin: true });
           for (const b of buttons) {
-            const hovered = mousePos.x >= cx - 150 && mousePos.x <= cx + 150 && mousePos.y >= b.y && mousePos.y <= b.y + 48;
-            drawCard(vctx, cx - 150, b.y, 300, 48, hovered ? CYAN : b.col); vctx.font = "bold 16px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center"; vctx.fillText(b.text, cx, b.y + 30);
+            const hovered = mousePos.x >= cx - 150 && mousePos.x <= cx + 150 && mousePos.y >= b.y && mousePos.y <= b.y + 44;
+            drawCard(vctx, cx - 150, b.y, 300, 44, hovered ? CYAN : b.col); vctx.font = "bold 15px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center"; vctx.fillText(b.text, cx, b.y + 28);
           }
-          const logHover = mousePos.x >= cx - 60 && mousePos.x <= cx + 60 && mousePos.y >= 385 && mousePos.y <= 415;
+          const logHover = mousePos.x >= cx - 60 && mousePos.x <= cx + 60 && mousePos.y >= 450 && mousePos.y <= 480;
           drawCard(vctx, cx - 60, 450, 120, 30, logHover ? RAINBOW[1] : GRAY); vctx.font = "12px Consolas"; vctx.fillStyle = logHover ? RAINBOW[1] : WHITE; vctx.textAlign = "center"; vctx.fillText("LOGOUT", cx, 469);
 
+        } else if (menuMode === "shop") {
+          drawCard(vctx, cx - 240, 90, 480, 450, ORE_GOLD);
+          vctx.font = "bold 20px Consolas"; vctx.fillStyle = ORE_GOLD; vctx.textAlign = "center";
+          vctx.fillText("PILOT SHOP", cx, 118);
+          vctx.font = "12px Consolas"; vctx.fillStyle = WHITE;
+          vctx.fillText(`COINS: ${getCoins()}`, cx, 138);
+
+          // Tabs
+          const tabs = [
+            { id: "boosts", label: "BOOSTS", x: cx - 230 },
+            { id: "trails", label: "TRAILS", x: cx - 150 },
+            { id: "titles", label: "TITLES", x: cx - 70 },
+            { id: "colors", label: "COLORS", x: cx + 10 },
+            { id: "contracts", label: "JOBS", x: cx + 90 },
+            { id: "blueprints", label: "BP", x: cx + 170 }
+          ];
+          for (const t of tabs) {
+            const on = shopTab === t.id;
+            drawCard(vctx, t.x, 148, 75, 28, on ? CYAN : DARK_GRAY);
+            vctx.font = "bold 10px Consolas";
+            vctx.fillStyle = on ? CYAN : GRAY;
+            vctx.fillText(t.label, t.x + 37, 167);
+          }
+
+          if (shopTab === "boosts") {
+            vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText("Buy → then ARM before match. Consumed when the fight starts.", cx, 192);
+            for (let i = 0; i < SHOP_CONSUMABLES.length; i++) {
+              const it = SHOP_CONSUMABLES[i];
+              const rowY = 200 + i * 32;
+              const owned = shopData.inv[it.id] || 0;
+              const armed = !!shopData.armed[it.id];
+              drawCard(vctx, cx - 220, rowY, 440, 28, armed ? RAINBOW[4] : DARK_GRAY);
+              vctx.font = "11px Consolas"; vctx.textAlign = "left"; vctx.fillStyle = WHITE;
+              vctx.fillText(`${it.name}`, cx - 210, rowY + 18);
+              vctx.fillStyle = GRAY; vctx.font = "9px Consolas";
+              vctx.fillText(`${it.desc} · own ${owned}/${it.maxOwn}`, cx - 50, rowY + 18);
+              vctx.textAlign = "center";
+              drawCard(vctx, cx + 100, rowY + 2, 70, 24, getCoins() >= it.cost && owned < it.maxOwn ? ORE_GOLD : DARK_GRAY);
+              vctx.font = "10px Consolas"; vctx.fillStyle = WHITE;
+              vctx.fillText(`${it.cost}c`, cx + 135, rowY + 18);
+              drawCard(vctx, cx + 175, rowY + 2, 40, 24, armed ? RAINBOW[4] : (owned > 0 ? CYAN : DARK_GRAY));
+              vctx.fillText(armed ? "ON" : "ARM", cx + 195, rowY + 18);
+            }
+          } else if (shopTab === "trails") {
+            vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText("Ghost common · Soul uncommon · Laser rare", cx, 192);
+            drawCard(vctx, cx - 200, 200, 180, 36, CYAN);
+            vctx.font = "bold 12px Consolas"; vctx.fillStyle = CYAN;
+            vctx.fillText("RANDOM TRAIL 500c", cx - 110, 223);
+            const picks = [
+              { id: "ghost", cost: 2000, label: "GHOST (White)", y: 250 },
+              { id: "soul", cost: 2250, label: "SOUL (Cyan)", y: 295 },
+              { id: "laser", cost: 2750, label: "LASER (Crimson)", y: 340 }
+            ];
+            for (const p of picks) {
+              const own = shopData.inv.trails.includes(p.id);
+              const eq = shopData.activeTrail === p.id;
+              drawCard(vctx, cx - 200, p.y, 180, 36, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
+              vctx.font = "11px Consolas"; vctx.fillStyle = WHITE;
+              vctx.fillText(own ? (eq ? `EQUIPPED ${p.label}` : `EQUIP ${p.label}`) : `${p.label} ${p.cost}c`, cx - 110, p.y + 23);
+            }
+            drawCard(vctx, cx + 20, 250, 180, 36, shopData.inv.shipColor ? RAINBOW[4] : DARK_GRAY);
+            vctx.fillText(shopData.inv.shipColor ? "SHIP COLOR OWNED" : "SHIP COLOR 1500c", cx + 110, 273);
+            drawCard(vctx, cx + 20, 310, 180, 36, shopData.inv.killBadge ? RAINBOW[4] : DARK_GRAY);
+            vctx.fillText(shopData.inv.killBadge ? "KILL BADGE OWNED" : "KILL BADGE 2000c", cx + 110, 333);
+            if (shopData.activeTrail) {
+              vctx.fillStyle = trailColorFor(shopData.activeTrail) || WHITE;
+              vctx.font = "12px Consolas";
+              vctx.fillText(`Active trail: ${shopData.activeTrail.toUpperCase()}`, cx, 400);
+            }
+          } else if (shopTab === "titles") {
+            vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText("Random roll 800c · Pick any title 2500c", cx, 192);
+            drawCard(vctx, cx - 180, 200, 360, 36, CYAN);
+            vctx.font = "bold 13px Consolas"; vctx.fillStyle = CYAN;
+            vctx.fillText("RANDOM TITLE — 800 COINS", cx, 223);
+            for (let i = 0; i < SHOP_TITLES.length; i++) {
+              const t = SHOP_TITLES[i];
+              const rowY = 250 + i * 38;
+              const own = shopData.inv.titles.includes(t.id);
+              const eq = shopData.activeTitle === t.id;
+              drawCard(vctx, cx - 180, rowY, 360, 34, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
+              vctx.font = "13px Consolas"; vctx.fillStyle = WHITE;
+              vctx.fillText(own ? (eq ? `★ ${t.label}` : t.label) : `${t.label} — 2500c`, cx, rowY + 22);
+            }
+
+          } else if (shopTab === "colors") {
+            vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText(`Buy basic colors with coins · earn the rest: ${SHOP_COLOR_BP_NEEDED} BPs per color · ${SHIP_STOCKPILE_BP_TOTAL} total → Ship Stockpile`, cx, 182);
+            drawCard(vctx, cx - 200, 188, 400, 32, DARK_GRAY);
+            vctx.font = "bold 11px Consolas"; vctx.fillStyle = ORE_GOLD;
+            vctx.fillText("EARN BPs: finish matches (60s+), win, claim contracts", cx, 209);
+            const totalBp = shopData.colorBpTotal || 0;
+            vctx.font = "10px Consolas"; vctx.fillStyle = shopData.inv.shipStockpile ? RAINBOW[4] : WHITE;
+            vctx.fillText(
+              shopData.inv.shipStockpile
+                ? `SHIP STOCKPILE BADGE UNLOCKED · ${totalBp} BPs collected`
+                : `BPs collected: ${totalBp} / ${SHIP_STOCKPILE_BP_TOTAL}`,
+              cx, 228
+            );
+            for (let i = 0; i < SHOP_COLORS.length; i++) {
+              const col = SHOP_COLORS[i];
+              const colRow = Math.floor(i / 2);
+              const colCol = i % 2;
+              const x0 = cx - 220 + colCol * 230;
+              const y0 = 238 + colRow * 36;
+              const own = shopData.inv.colors.includes(col.id);
+              const eq = shopData.activeColor === col.id;
+              const n = colorBpCount(col.id);
+              drawCard(vctx, x0, y0, 220, 32, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
+              vctx.fillStyle = col.rgb;
+              vctx.fillRect(x0 + 6, y0 + 6, 18, 18);
+              vctx.font = "10px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+              vctx.fillText(
+                own ? (eq ? `★ ${col.label}` : col.label)
+                    : (col.price ? `${col.label} — ${col.price}c` : `${col.label}  ${n}/${SHOP_COLOR_BP_NEEDED}`),
+                x0 + 30, y0 + 20
+              );
+            }
+          } else if (shopTab === "contracts") {
+            if (!contractData.list || contractData.day !== contractDayKey()) reloadContracts();
+            vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText("Daily contracts · reset UTC midnight", cx, 185);
+            for (let i = 0; i < contractData.list.length; i++) {
+              const id = contractData.list[i];
+              const def = CONTRACT_POOL.find(c => c.id === id);
+              if (!def) continue;
+              const prog = contractData.progress[id] || 0;
+              const done = prog >= def.target;
+              const claimed = !!contractData.claimed[id];
+              const rowY = 200 + i * 70;
+              drawCard(vctx, cx - 220, rowY, 440, 60, done && !claimed ? RAINBOW[4] : DARK_GRAY);
+              vctx.font = "13px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+              vctx.fillText(def.desc, cx - 200, rowY + 22);
+              vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+              vctx.fillText(`${Math.min(prog, def.target)} / ${def.target} · Reward ${def.reward}c`, cx - 200, rowY + 42);
+              drawCard(vctx, cx + 100, rowY + 14, 100, 32, claimed ? DARK_GRAY : (done ? ORE_GOLD : DARK_GRAY));
+              vctx.font = "11px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center";
+              vctx.fillText(claimed ? "CLAIMED" : (done ? "CLAIM" : "OPEN"), cx + 150, rowY + 35);
+            }
+          } else if (shopTab === "blueprints") {
+            vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText("Permanent modules · applied at every match start", cx, 185);
+            for (let i = 0; i < SHOP_BLUEPRINTS.length; i++) {
+              const bp = SHOP_BLUEPRINTS[i];
+              const rowY = 200 + i * 48;
+              const own = shopData.inv.blueprints.includes(bp.id);
+              drawCard(vctx, cx - 220, rowY, 440, 42, own ? RAINBOW[4] : DARK_GRAY);
+              vctx.font = "13px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+              vctx.fillText(bp.name, cx - 200, rowY + 18);
+              vctx.font = "10px Consolas"; vctx.fillStyle = GRAY;
+              vctx.fillText(bp.desc, cx - 200, rowY + 34);
+              vctx.textAlign = "center";
+              drawCard(vctx, cx + 100, rowY + 6, 100, 30, own ? DARK_GRAY : ORE_GOLD);
+              vctx.font = "11px Consolas"; vctx.fillStyle = WHITE;
+              vctx.fillText(own ? "OWNED" : `${bp.cost}c`, cx + 150, rowY + 26);
+            }
+
+          }
+
+          if (shopMessage) {
+            vctx.font = "bold 12px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
+            vctx.fillText(shopMessage, cx, 505);
+          }
+          drawCard(vctx, cx - 80, 520, 160, 32, WHITE);
+          vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
+          vctx.fillText("BACK", cx, 541);
+
         } else if (menuMode === "host_private") {
-          drawCard(vctx, cx - 230, 100, 460, 380, CYAN);
+          drawCard(vctx, cx - 230, 80, 460, 420, CYAN);
           vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
-          vctx.fillText("HOST PRIVATE ROOM (MAX 6)", cx, 130);
+          vctx.fillText("HOST PRIVATE ROOM (MAX 6)", cx, 110);
           vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
           vctx.fillText("MODE", cx, 155);
           // Mode buttons
@@ -2093,7 +3013,19 @@
           vctx.fillStyle = RAINBOW[4]; vctx.fillText("CREATE", cx - 75, 391);
           vctx.fillStyle = RAINBOW[1]; vctx.fillText("BACK", cx + 75, 391);
           vctx.font = "10px Consolas"; vctx.fillStyle = GRAY;
-          vctx.fillText("Timer max 20 min · Kill limit 0 = unlimited", cx, 450);
+          vctx.fillText("Timer max 20 min · Kill limit 0 = unlimited", cx, 420);
+          // Wager / entry fee
+          vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+          vctx.fillText("ENTRY FEE (WAGER)", cx, 445);
+          const fees = [0, 50, 100, 250, 500];
+          for (let fi = 0; fi < fees.length; fi++) {
+            const f = fees[fi];
+            const fx = cx - 200 + fi * 82;
+            const on = (matchConfig.entryFee || 0) === f;
+            drawCard(vctx, fx, 455, 75, 28, on ? ORE_GOLD : DARK_GRAY);
+            vctx.font = "11px Consolas"; vctx.fillStyle = on ? ORE_GOLD : WHITE;
+            vctx.fillText(f === 0 ? "FREE" : `${f}c`, fx + 37, 474);
+          }
         } else if (menuMode === "join_private") {
           drawCard(vctx, cx - 170, 180, 340, 260, CYAN); vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center"; vctx.fillText("ENTER PRIVATE LOBBY", cx, 215);
           vctx.font = "12px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left"; vctx.fillText("4-Letter Code:", cx - 140, 240);
@@ -2149,13 +3081,7 @@
           if (worldEvent.timeLeft <= 0) worldEvent = null;
         }
       } else {
-        // Frozen combat — still allow return input
-        if (keysDown["Space"] || keysDown["Enter"] || keysDown["Escape"]) {
-          returnToLobbyFromMatch();
-          keysDown["Space"] = false;
-          keysDown["Enter"] = false;
-          keysDown["Escape"] = false;
-        }
+        // Frozen combat — results screen is closed with the X button only (no key skip)
         // Skip the rest of simulation while results show
         netAccumulator += dt;
         if (netAccumulator >= NET_TICK_RATE) {
@@ -2210,7 +3136,7 @@
           myShip.world_x = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1)); 
           myShip.world_y = Number((-WORLD_BOUND * 0.4 + Math.random() * (WORLD_BOUND * 0.8)).toFixed(1)); 
           myShip.vx = 0.0; myShip.vy = 0.0; myShip.mana = 25.0; myShip.respawn_timer = 0;
-          myShip.invuln_timer = 1; // stays until first shot
+          myShip.invuln_timer = 15; // max 15s; firing ends it early
         }
       }
       for (let i = killFeed.length - 1; i >= 0; i--) {
@@ -2232,21 +3158,37 @@
 
       if (myShip && myShip.cooldown > 0) myShip.cooldown -= dt;
       if (myShip && myShip.dash_cooldown > 0) myShip.dash_cooldown -= dt;
+      if (myShip && myShip.alive && (myShip.invuln_timer || 0) > 0) {
+        myShip.invuln_timer = Math.max(0, myShip.invuln_timer - dt);
+      }
 
       function emitShot(angDeg, offsetFwd, offsetSide, customLife = null, isMine = false) {
-        if (!myShip || !myShip.alive) return;
+        if (!myShip || !myShip.alive) return false;
+        const isMis = isMine ? false : Boolean(myShip.is_missile);
+        // Missiles cost 5 Ore Mana each (shop battery can waive first few)
+        if (isMis) {
+          if ((myShip._freeMissiles || 0) > 0) {
+            myShip._freeMissiles -= 1;
+          } else {
+            if ((myShip.mana || 0) < 5) return false;
+            myShip.mana -= 5;
+          }
+        }
         if ((myShip.invuln_timer || 0) > 0) myShip.invuln_timer = 0; // firing ends spawn protection
         if (!isMine) { try { SFX.shoot(); } catch (e) {} }
         angDeg = ((angDeg % 360) + 360) % 360;
         const rAng = (angDeg * Math.PI) / 180; const perp = rAng + Math.PI / 2;
         const lx = Number((myShip.world_x + offsetFwd * Math.cos(rAng) + offsetSide * Math.cos(perp)).toFixed(1)); const ly = Number((myShip.world_y - offsetFwd * Math.sin(rAng) - offsetSide * Math.sin(perp)).toFixed(1));
-        const isMis = isMine ? false : Boolean(myShip.is_missile);
         let shotDmg = isMine ? myShip.shot_damage * 2 : myShip.shot_damage;
         if (isMis) shotDmg = 1; // missiles never one-shot
-        const l = { x: lx, y: ly, angle: Math.round(angDeg), owner: myId, dmg: shotDmg, pierce: isMine ? false : Boolean(myShip.piercing), speed: isMine ? 0 : myShip.laser_speed, is_missile: isMis, is_mine: isMine, boomerang: isMine ? false : Boolean(myShip.boomerang) };
+        // Missiles launch slow then accelerate up to laser_speed
+        const maxSpd = isMine ? 0 : myShip.laser_speed;
+        const startSpd = isMis ? Math.max(2.5, maxSpd * 0.28) : maxSpd;
+        const l = { x: lx, y: ly, angle: Math.round(angDeg), owner: myId, dmg: shotDmg, pierce: isMine ? false : Boolean(myShip.piercing), speed: startSpd, speed_max: isMis ? maxSpd : undefined, is_missile: isMis, is_mine: isMine, boomerang: isMine ? false : Boolean(myShip.boomerang) };
         if (customLife !== null) l.life = customLife; 
         lasers.push(l); 
         outgoingLaserQueue.push(l);
+        return true;
       }
 
       function emitStasis() {
@@ -2309,7 +3251,9 @@
 
         if (keysDown["KeyW"] || keysDown["ArrowUp"]) {
           const rad = (myShip.angle * Math.PI) / 180; const thrust = 0.065 * myShip.move_speed;
-          myShip.vx += thrust * Math.cos(rad); myShip.vy -= thrust * Math.sin(rad); trails.push({x: myShip.world_x - Math.cos(rad) * SHIP_SIZE, y: myShip.world_y + Math.sin(rad) * SHIP_SIZE, life: 1.0, color: myShip.color});
+          myShip.vx += thrust * Math.cos(rad); myShip.vy -= thrust * Math.sin(rad);
+          const trailCol = (shopData && shopData.activeTrail && trailColorFor(shopData.activeTrail)) || myShip.color;
+          trails.push({x: myShip.world_x - Math.cos(rad) * SHIP_SIZE, y: myShip.world_y + Math.sin(rad) * SHIP_SIZE, life: 1.0, color: trailCol});
         }
 
         {
@@ -2319,14 +3263,21 @@
           // Hold-to-fire only with Gatling Laser; otherwise one shot per press
           const wantFire = myShip.hold_fire ? fireHeld : fireTap;
           if (wantFire && myShip.cooldown <= 0 && myShip.stasis_timer <= 0 && !myShip.is_charging_shield) {
+            if (myShip.is_missile && (myShip.mana || 0) < 5) {
+              // not enough mana for a missile
+            } else {
             const rad = (myShip.angle * Math.PI) / 180;
-            if (myShip.flak_mode) { for (let i = -3; i <= 3; i++) emitShot((myShip.angle + i * 8 + 360) % 360, SHIP_SIZE, 0, 0.35); } 
+            let fired = false;
+            if (myShip.flak_mode) { for (let i = -3; i <= 3; i++) { if (emitShot((myShip.angle + i * 8 + 360) % 360, SHIP_SIZE, 0, 0.35)) fired = true; } } 
             else {
-              if (myShip.cannons === 2) { emitShot(myShip.angle, SHIP_SIZE, 8); emitShot(myShip.angle, SHIP_SIZE, -8); } else { emitShot(myShip.angle, SHIP_SIZE, 0); }
-              if (myShip.spread_shot) { emitShot((myShip.angle + 15) % 360, SHIP_SIZE, 0); emitShot((myShip.angle - 15) % 360, SHIP_SIZE, 0); }
-              if (myShip.rear_cannon) emitShot((myShip.angle + 180) % 360, SHIP_SIZE * 0.7, 0);
+              if (myShip.cannons === 2) { if (emitShot(myShip.angle, SHIP_SIZE, 8)) fired = true; if (emitShot(myShip.angle, SHIP_SIZE, -8)) fired = true; } else { if (emitShot(myShip.angle, SHIP_SIZE, 0)) fired = true; }
+              if (myShip.spread_shot) { if (emitShot((myShip.angle + 15) % 360, SHIP_SIZE, 0)) fired = true; if (emitShot((myShip.angle - 15) % 360, SHIP_SIZE, 0)) fired = true; }
+              if (myShip.rear_cannon) { if (emitShot((myShip.angle + 180) % 360, SHIP_SIZE * 0.7, 0)) fired = true; }
             }
-            myShip.cooldown = myShip.cooldown_max; myShip.world_x -= 0.6 * Math.cos(rad); myShip.world_y += 0.6 * Math.sin(rad);
+            if (fired || !myShip.is_missile) {
+              myShip.cooldown = myShip.cooldown_max; myShip.world_x -= 0.6 * Math.cos(rad); myShip.world_y += 0.6 * Math.sin(rad);
+            }
+            }
           }
         }
 
@@ -2378,6 +3329,10 @@
         const hitRad = l.size !== undefined ? l.size : 4.5;
 
         if (l.is_missile) {
+          // Accelerate from slow launch toward top speed
+          const maxSpd = (l.speed_max !== undefined && Number.isFinite(Number(l.speed_max))) ? Number(l.speed_max) : 14.0;
+          const cur = (l.speed !== undefined && Number.isFinite(Number(l.speed))) ? Number(l.speed) : 2.5;
+          l.speed = Math.min(maxSpd, cur + 9.0 * dt);
           // Only home toward ships visible on the shooter's screen
           const halfW = V_WIDTH * 0.5 + 30;
           const halfH = V_HEIGHT * 0.5 + 30;
@@ -2461,6 +3416,26 @@
         }
         if (hitAst) { if (!l.pierce) { lasers.splice(i, 1); continue; } }
 
+        // Shoot missiles to break them (any non-missile shot from another owner)
+        if (!l.is_missile && !l.is_mine && !l.is_stasis) {
+          let brokeMissile = false;
+          for (let k = lasers.length - 1; k >= 0; k--) {
+            if (k === i) continue;
+            const m = lasers[k];
+            if (!m || !m.is_missile) continue;
+            if (Number(m.owner) === Number(l.owner)) continue;
+            const mdx = l.x - m.x; const mdy = l.y - m.y;
+            if (mdx * mdx + mdy * mdy < 12 * 12) {
+              try { spawnParticles(m.x, m.y, "rgb(255, 170, 40)", 10); } catch (e) {}
+              lasers.splice(k, 1);
+              if (k < i) i--;
+              brokeMissile = true;
+              break;
+            }
+          }
+          if (brokeMissile && !l.pierce) { lasers.splice(i, 1); continue; }
+        }
+
         // Ships always block projectiles (pierce only applies to asteroids)
         {
           let hitPlayer = false;
@@ -2530,14 +3505,14 @@
             if (o.is_gold) { 
               myShip.hp = myShip.max_hp; myShip.mana += 100.0; 
               recordAccountStat("career_xp", 100);
-              matchStats.oreMined += 1;
+              matchStats.oreMined += 1; trackContract("ore", 1);
               spawnFloatText(o.x, o.y, "+ORE", ORE_GOLD);
             } else {
               const xpGain = Math.floor(15 * myShip.xp_mult);
               myShip.mana = Math.min(myShip.max_mana, myShip.mana + 20.0 * myShip.mana_mult); 
               myShip.xp += xpGain;
               recordAccountStat("career_xp", xpGain);
-              matchStats.oreMined += 1;
+              matchStats.oreMined += 1; trackContract("ore", 1);
               spawnFloatText(o.x, o.y, `+${xpGain}`, ORE_BLUE);
               if (myShip.heal_on_ore) {
                 myShip.ore_counter++;
@@ -2607,6 +3582,7 @@
               max_hp: myShip.max_hp, 
               alive: myShip.alive, 
               xp: myShip.xp, 
+              tier: myShip.tier || 0,
               kills: myShip.kills || 0, 
               stasis: myShip.stasis_timer > 0, 
               is_charging_shield: Boolean(myShip.is_charging_shield),
@@ -2621,7 +3597,8 @@
               useTimer: matchConfig.useTimer,
               useKills: matchConfig.useKills,
               durationSec: matchConfig.durationSec,
-              killLimit: matchConfig.killLimit
+              killLimit: matchConfig.killLimit,
+              entryFee: matchConfig.entryFee || 0
             };
             outPayload.match_time = Number(matchTimeLeft.toFixed(1));
             if (worldEvent) {
@@ -2822,7 +3799,7 @@
         vctx.font = "9px Consolas";
         vctx.fillStyle = WHITE;
         vctx.textAlign = "center";
-        vctx.fillText("SAFE — FIRE TO ARM", cx, cy + SHIP_SIZE + 18);
+        vctx.fillText(`SAFE ${Math.ceil(myShip.invuln_timer)}s — FIRE TO ARM`, cx, cy + SHIP_SIZE + 18);
       }
 
       if (myShip.is_charging_shield) {
@@ -3103,10 +4080,26 @@
           V_WIDTH / 2,
           380
         );
+        // Color blueprints earned this match
         vctx.textAlign = "center";
-        vctx.font = "12px Consolas";
-        vctx.fillStyle = GRAY;
-        vctx.fillText("PRESS SPACE / ENTER — RETURN TO HANGAR", V_WIDTH / 2, 415);
+        if (matchEarnedBPs.length > 0) {
+          vctx.font = "bold 11px Consolas";
+          vctx.fillStyle = ORE_GOLD;
+          vctx.fillText(`COLOR BPs EARNED: ${matchEarnedBPs.length}`, V_WIDTH / 2, 405);
+          vctx.font = "11px Consolas";
+          vctx.fillText(matchEarnedBPs[matchEarnedBPs.length - 1], V_WIDTH / 2, 423);
+        }
+        // Close (X) button
+        const cr = resultsCloseRect();
+        vctx.fillStyle = "rgba(255, 60, 60, 0.25)";
+        vctx.fillRect(cr.x, cr.y, cr.w, cr.h);
+        vctx.strokeStyle = RAINBOW[1];
+        vctx.lineWidth = 2;
+        vctx.strokeRect(cr.x, cr.y, cr.w, cr.h);
+        vctx.beginPath();
+        vctx.moveTo(cr.x + 8, cr.y + 8); vctx.lineTo(cr.x + cr.w - 8, cr.y + cr.h - 8);
+        vctx.moveTo(cr.x + cr.w - 8, cr.y + 8); vctx.lineTo(cr.x + 8, cr.y + cr.h - 8);
+        vctx.stroke();
       }
     }
   </script>
