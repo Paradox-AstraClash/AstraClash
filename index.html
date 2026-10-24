@@ -527,7 +527,8 @@
         activeTrail: null,
         activeColor: null,
         shipColorHex: null,
-        colorBpTotal: 0
+        colorBpTotal: 0,
+        updatedAt: 0
       };
     }
     function shopStorageKey() {
@@ -537,8 +538,11 @@
     function loadShop() {
       const key = shopStorageKey();
       if (!key) return defaultShopData();
+      try { return normalizeShopData(JSON.parse(localStorage.getItem(key) || "null")); }
+      catch (e) { return defaultShopData(); }
+    }
+    function normalizeShopData(raw) {
       try {
-        const raw = JSON.parse(localStorage.getItem(key) || "null");
         if (!raw || typeof raw !== "object") return defaultShopData();
         const d = defaultShopData();
         d.inv = { ...d.inv, ...(raw.inv || {}) };
@@ -555,6 +559,7 @@
         d.activeColor = raw.activeColor || null;
         d.shipColorHex = raw.shipColorHex || null;
         d.colorBpTotal = Number(raw.colorBpTotal) || 0;
+        d.updatedAt = Number(raw.updatedAt) || 0;
         if (d.activeColor) {
           const col = SHOP_COLORS.find(c => c.id === d.activeColor);
           if (col) d.shipColorHex = col.rgb;
@@ -565,8 +570,121 @@
     function saveShop(data) {
       const key = shopStorageKey();
       if (!key) return;
+      data.updatedAt = Date.now();
       try { localStorage.setItem(key, JSON.stringify(data)); } catch (e) {}
+      scheduleShopPush(data); // also save to the player's account (Supabase)
     }
+
+    // ---- Cloud save: shop data is mirrored to the Supabase table `shop_data` ----------
+    // status: local (not signed in) | syncing | saving | synced | error
+    const shopCloud = { status: "local", pulledFor: null, lastPull: 0, timer: null, pending: null, pendingUser: null, pushing: null };
+    function shopCloudUserId() { return (sb && activePilot && activePilot.id) ? activePilot.id : null; }
+    function shopPayload(data) {
+      // strip temporary in-match fields (anything starting with "_")
+      return JSON.parse(JSON.stringify(data, (k, v) => (typeof k === "string" && k.startsWith("_") ? undefined : v)));
+    }
+    /** Merge two copies of a player's shop data without losing anything either has earned. */
+    function mergeShopData(a, b) {
+      if (!a) return b;
+      if (!b) return a;
+      const aNewer = (Number(a.updatedAt) || 0) >= (Number(b.updatedAt) || 0);
+      const out = JSON.parse(JSON.stringify(aNewer ? a : b)); // newest copy wins for settings & consumable counts
+      out.inv = out.inv || {};
+      const ai = a.inv || {}, bi = b.inv || {};
+      // things you own: union
+      for (const k of ["titles", "trails", "colors", "blueprints"]) {
+        out.inv[k] = Array.from(new Set([...(ai[k] || []), ...(bi[k] || [])]));
+      }
+      for (const k of ["killBadge", "shipStockpile", "shipColor"]) out.inv[k] = !!(ai[k] || bi[k]);
+      // color blueprint progress is never spent: keep the highest count per color
+      const cb = {};
+      for (const src of [ai.colorBlueprints || {}, bi.colorBlueprints || {}]) {
+        for (const id of Object.keys(src)) cb[id] = Math.max(cb[id] || 0, Number(src[id]) || 0);
+      }
+      out.inv.colorBlueprints = cb;
+      out.colorBpTotal = Math.max(Number(a.colorBpTotal) || 0, Number(b.colorBpTotal) || 0);
+      // anything the merged progress has earned should be unlocked
+      for (const id of Object.keys(cb)) {
+        const col = SHOP_COLORS.find(c => c.id === id);
+        if (col && !col.price && cb[id] >= SHOP_COLOR_BP_NEEDED && !out.inv.colors.includes(id)) out.inv.colors.push(id);
+      }
+      if (out.colorBpTotal >= SHIP_STOCKPILE_BP_TOTAL) out.inv.shipStockpile = true;
+      out.updatedAt = Math.max(Number(a.updatedAt) || 0, Number(b.updatedAt) || 0);
+      return out;
+    }
+    function scheduleShopPush(data) {
+      const uid = shopCloudUserId();
+      if (!uid) return;
+      shopCloud.pending = shopPayload(data);
+      shopCloud.pendingUser = uid;
+      shopCloud.status = "saving";
+      clearTimeout(shopCloud.timer);
+      shopCloud.timer = setTimeout(() => { flushShopPush().catch(() => {}); }, 1200);
+    }
+    async function flushShopPush() {
+      clearTimeout(shopCloud.timer);
+      shopCloud.timer = null;
+      if (shopCloud.pushing) { try { await shopCloud.pushing; } catch (e) {} }
+      const payload = shopCloud.pending, uid = shopCloud.pendingUser;
+      if (!payload || !uid || !sb) return;
+      shopCloud.pending = null;
+      const p = (async () => {
+        const { error } = await sb.from("shop_data").upsert(
+          { user_id: uid, data: payload, updated_at: new Date().toISOString() },
+          { onConflict: "user_id" }
+        );
+        if (error) throw error;
+      })();
+      shopCloud.pushing = p;
+      try {
+        await p;
+        if (!shopCloud.pending) shopCloud.status = "synced";
+      } catch (e) {
+        console.warn("Shop cloud save failed:", e);
+        shopCloud.status = "error";
+        if (!shopCloud.pending) { shopCloud.pending = payload; shopCloud.pendingUser = uid; } // keep for retry
+        clearTimeout(shopCloud.timer);
+        shopCloud.timer = setTimeout(() => { flushShopPush().catch(() => {}); }, 15000);
+      } finally {
+        if (shopCloud.pushing === p) shopCloud.pushing = null;
+      }
+    }
+    /** Pull the account's saved shop data and merge it with this device's copy. */
+    async function cloudSyncShop(force) {
+      const uid = shopCloudUserId();
+      if (!uid) { shopCloud.status = "local"; return; }
+      const now = Date.now();
+      if (!force && shopCloud.pulledFor === uid && now - shopCloud.lastPull < 60000) return;
+      shopCloud.pulledFor = uid;
+      shopCloud.lastPull = now;
+      if (shopCloud.status !== "saving") shopCloud.status = "syncing";
+      try {
+        const { data: row, error } = await sb.from("shop_data").select("data").eq("user_id", uid).maybeSingle();
+        if (error) throw error;
+        if (shopCloudUserId() !== uid) return; // logged out / switched account while loading
+        const local = loadShop(); // freshest local copy (includes anything bought while we were loading)
+        const remote = row && row.data && typeof row.data === "object" ? normalizeShopData(row.data) : null;
+        const merged = mergeShopData(local, remote);
+        const keep = {};
+        for (const k in shopData) if (k.startsWith("_")) keep[k] = shopData[k]; // temporary in-match fields
+        shopData = Object.assign(merged, keep);
+        const same = remote && JSON.stringify(shopPayload(merged)) === JSON.stringify(shopPayload(remote));
+        if (same) {
+          try { localStorage.setItem(shopStorageKey(), JSON.stringify(shopData)); } catch (e) {}
+          if (!shopCloud.pending) shopCloud.status = "synced";
+        } else {
+          saveShop(shopData); // writes locally and uploads the merged result
+        }
+      } catch (e) {
+        console.warn("Shop cloud load failed:", e);
+        shopCloud.status = "error";
+        shopCloud.pulledFor = null; // try again next time
+      }
+    }
+    // Best-effort flush when the tab is hidden/closed
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden" && shopCloud.pending) flushShopPush().catch(() => {});
+    });
     let shopData = defaultShopData();
     let shopTab = "boosts"; // boosts | trails | titles | colors | contracts | blueprints
     let shopMessage = "";
@@ -633,6 +751,7 @@
     }
     function reloadShopForPilot() {
       shopData = loadShop();
+      cloudSyncShop(false);
     }
     function colorBpCount(colorId) {
       return (shopData.inv.colorBlueprints && shopData.inv.colorBlueprints[colorId]) || 0;
@@ -1968,7 +2087,9 @@
           authMessage = "";
           menuMode = "account";
           statusMessage = "Awaiting pilot identification...";
-          if (sb) sb.auth.signOut().catch(() => {});
+          if (sb) flushShopPush().catch(() => {}).finally(() => sb.auth.signOut().catch(() => {}));
+          shopCloud.pulledFor = null; shopCloud.status = "local";
+          shopData = defaultShopData();
           openMobileKeyboard("authName");
         }
       } else if (menuMode === "shop") {
@@ -2789,6 +2910,16 @@
           vctx.fillText("PILOT SHOP", cx, 118);
           vctx.font = "12px Consolas"; vctx.fillStyle = WHITE;
           vctx.fillText(`COINS: ${getCoins()}`, cx, 138);
+          {
+            const cs = shopCloud.status;
+            vctx.font = "10px Consolas"; vctx.textAlign = "right";
+            vctx.fillStyle = cs === "synced" ? RAINBOW[4] : (cs === "error" ? RAINBOW[1] : GRAY);
+            vctx.fillText(
+              cs === "synced" ? "CLOUD SAVE: ON" : (cs === "error" ? "CLOUD SAVE: ERROR" : (cs === "local" ? "LOCAL ONLY" : "SYNCING...")),
+              cx + 230, 108
+            );
+            vctx.textAlign = "center";
+          }
 
           // Tabs
           const tabs = [
