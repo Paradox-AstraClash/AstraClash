@@ -108,20 +108,24 @@
     <div class="t-btn" style="width: 42px; height: 42px;" id="btn-3">3</div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || window.matchMedia("(pointer: coarse)").matches;
     const mobileInput = document.getElementById("mobileTextInput");
-    let mobileField = null; // 'authName' | 'authPass' | 'roomCode' | 'roomPass'
+    let mobileField = null; // 'authName' | 'authDisplay' | 'authPass' | 'roomCode' | 'roomPass'
 
     function syncMobileFieldFromInput() {
       if (!mobileInput || !mobileField) return;
       let v = mobileInput.value || "";
       if (mobileField === "authName") {
-        v = v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+        v = v.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 16);
         authNameInput = v;
         if (mobileInput.value !== v) mobileInput.value = v;
+      } else if (mobileField === "authDisplay") {
+        v = v.slice(0, 20);
+        authDisplayInput = v;
       } else if (mobileField === "authPass") {
-        v = v.slice(0, 12);
+        v = v.slice(0, 32);
         authPassInput = v;
       } else if (mobileField === "roomCode") {
         v = v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
@@ -142,12 +146,17 @@
       let type = "text";
       if (field === "authName") {
         val = authNameInput;
-        placeholder = "CALLSIGN";
-        mobileInput.setAttribute("autocapitalize", "characters");
+        placeholder = "USERNAME";
+        mobileInput.setAttribute("autocapitalize", "none");
         authActiveField = "name";
+      } else if (field === "authDisplay") {
+        val = authDisplayInput;
+        placeholder = "DISPLAY NAME";
+        mobileInput.setAttribute("autocapitalize", "words");
+        authActiveField = "display";
       } else if (field === "authPass") {
         val = authPassInput;
-        placeholder = "PASS-KEY";
+        placeholder = "PASSWORD";
         type = "password";
         authActiveField = "pass";
       } else if (field === "roomCode") {
@@ -287,7 +296,7 @@
       "Tier 5 is max. After that, your top bar becomes pure mana.",
       "Twin Cannons and Spread Burst multiply your shot count.",
       "Phase Dash burns mana to blink forward — great for escapes.",
-      "Same callsign is allowed. Your career stats stay on this device.",
+      "Sign in with username + password. Display name is what others see.",
       "Host leaves? World authority can desync — rejoin a fresh room.",
       "Ore magnets pull harder with Tractor and Singularity upgrades.",
       "Team modes disable friendly fire. Don't shoot your color.",
@@ -403,7 +412,18 @@
     let connectionError = false;
     let connectStartTime = 0;
 
-    // ACCOUNT SYSTEM STORAGE
+    // --- Supabase (same project as Paradox) ---
+    const SUPABASE_URL = "https://vghxiupmcfvoidxmeenp.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZnaHhpdXBtY2Z2b2lkeG1lZW5wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1NDU3NzEsImV4cCI6MjEwODEyMTc3MX0.CeRCIeqpMTw21wtF-nJqug0fkyZv2Rdl4L-dQUmWg5A";
+    const sb = window.supabase
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+      : null;
+
+    function usernameToEmail(username) {
+      return String(username || "").trim().toLowerCase() + "@example.com";
+    }
+
+    // Local career stats (still device-side; account identity is on Supabase)
     function getAccounts() {
       try {
         return JSON.parse(localStorage.getItem("astraclash_accounts")) || {};
@@ -414,15 +434,71 @@
     }
 
     let activePilot = JSON.parse(sessionStorage.getItem("astraclash_current_user") || "null");
-    let menuMode = "connecting"; 
+    let menuMode = "connecting";
     let authTab = "register"; // 'register' or 'login'
     let authNameInput = "";
+    let authDisplayInput = "";
     let authPassInput = "";
-    let authActiveField = "name"; // 'name' or 'pass'
+    let authActiveField = "name"; // 'name' | 'display' | 'pass'
     let authMessage = "";
+    let authBusy = false;
     
     let statusMessage = "Booting up servers...";
     let statusColor = CYAN;
+
+    async function loadProfileForUser(user) {
+      if (!sb || !user) return null;
+      const { data, error } = await sb.from("profiles").select("*").eq("id", user.id).single();
+      if (error || !data) {
+        // Profile may still be creating via trigger — fall back to metadata
+        const meta = user.user_metadata || {};
+        return {
+          id: user.id,
+          username: (meta.handle || user.email.split("@")[0] || "pilot").toLowerCase(),
+          display_name: meta.display_name || meta.handle || "Pilot",
+          handle: meta.handle || user.email.split("@")[0],
+          career_xp: 0, kills: 0, asteroids: 0, highest_tier: 0
+        };
+      }
+      const local = getAccounts()[data.handle] || {};
+      return {
+        id: data.id,
+        username: data.handle,
+        display_name: data.display_name || data.handle,
+        handle: data.handle,
+        coins: data.coins || 0,
+        career_xp: local.career_xp || 0,
+        kills: local.kills || 0,
+        asteroids: local.asteroids || 0,
+        highest_tier: local.highest_tier || 0
+      };
+    }
+
+    async function hydrateAuthSession() {
+      if (!sb) return;
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        if (session && session.user) {
+          const pilot = await loadProfileForUser(session.user);
+          if (pilot) {
+            activePilot = pilot;
+            sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+            // Merge local career shell
+            const accs = getAccounts();
+            if (!accs[pilot.username]) {
+              accs[pilot.username] = {
+                username: pilot.username,
+                career_xp: 0, kills: 0, asteroids: 0, highest_tier: 0
+              };
+              saveAccounts(accs);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("auth hydrate failed", e);
+      }
+    }
+    hydrateAuthSession();
 
     let roomCodeInput = ""; let passwordInput = ""; let activeInput = "code";
 
@@ -1253,65 +1329,134 @@
         }
       } else if (menuMode === "account") {
         // Tab buttons
-        if (pos.y >= 140 && pos.y <= 175) {
+        if (pos.y >= 130 && pos.y <= 165) {
           if (pos.x >= cx - 150 && pos.x <= cx - 10) { authTab = "register"; authMessage = ""; }
           if (pos.x >= cx + 10 && pos.x <= cx + 150) { authTab = "login"; authMessage = ""; }
         }
-        // Input selector
+        // Input selector (register has 3 fields, login has 2)
         if (pos.x >= cx - 140 && pos.x <= cx + 140) {
-          if (pos.y >= 210 && pos.y <= 248) {
+          if (pos.y >= 185 && pos.y <= 223) {
             authActiveField = "name";
             openMobileKeyboard("authName");
           }
-          if (pos.y >= 270 && pos.y <= 308) {
+          if (authTab === "register" && pos.y >= 245 && pos.y <= 283) {
+            authActiveField = "display";
+            openMobileKeyboard("authDisplay");
+          }
+          const passY0 = authTab === "register" ? 305 : 245;
+          if (pos.y >= passY0 && pos.y <= passY0 + 38) {
             authActiveField = "pass";
             openMobileKeyboard("authPass");
           }
         }
-        // Action Button
-        if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 335 && pos.y <= 380) {
+        // Action Button (aligned with renderLobby account panel)
+        const actY = authTab === "register" ? 372 : 312;
+        if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= actY && pos.y <= actY + 48) {
           closeMobileKeyboard();
-          const accs = getAccounts();
-          const u = authNameInput.trim().toUpperCase();
-          const p = authPassInput.trim();
+          if (authBusy) return;
+          const u = authNameInput.trim().toLowerCase();
+          const d = (authDisplayInput.trim() || u);
+          const p = authPassInput;
 
           if (u.length < 2) {
-            authMessage = "CALLSIGN MUST BE 2+ CHARS";
+            authMessage = "USERNAME MUST BE 2+ CHARS";
+            return;
+          }
+          if (!/^[a-z0-9_]+$/.test(u)) {
+            authMessage = "USERNAME: A-Z, 0-9, UNDERSCORE ONLY";
+            return;
+          }
+          if (p.length < 6) {
+            authMessage = "PASSWORD MUST BE 6+ CHARS";
+            return;
+          }
+          if (!sb) {
+            authMessage = "AUTH UNAVAILABLE — RELOAD PAGE";
             return;
           }
 
-          if (authTab === "register") {
-            // Callsigns are not unique — upsert local profile (keep career stats if name already exists)
-            const prev = accs[u] || {};
-            accs[u] = {
-              username: u,
-              pass: p,
-              career_xp: prev.career_xp || 0,
-              kills: prev.kills || 0,
-              asteroids: prev.asteroids || 0,
-              highest_tier: prev.highest_tier || 0
-            };
-            saveAccounts(accs);
-            activePilot = accs[u];
-            sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
-            initMyShip();
-            menuMode = "main";
-            statusMessage = prev.username
-              ? `Welcome back, Commander ${u}.`
-              : `Welcome to AstraClash, Commander ${u}.`;
-          } else {
-            if (!accs[u]) {
-              authMessage = "PILOT NOT FOUND";
-            } else if (accs[u].pass !== p) {
-              authMessage = "INCORRECT PASS-KEY";
-            } else {
-              activePilot = accs[u];
-              sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
-              initMyShip();
-              menuMode = "main";
-              statusMessage = `Welcome back, Commander ${u}.`;
+          authBusy = true;
+          authMessage = authTab === "register" ? "CREATING ACCOUNT..." : "SIGNING IN...";
+
+          (async () => {
+            try {
+              const email = usernameToEmail(u);
+              if (authTab === "register") {
+                const { data, error } = await sb.auth.signUp({
+                  email,
+                  password: p,
+                  options: {
+                    data: {
+                      handle: u,
+                      display_name: d.slice(0, 20)
+                    }
+                  }
+                });
+                if (error) {
+                  authMessage = (error.message || "SIGN UP FAILED").toUpperCase().slice(0, 48);
+                  authBusy = false;
+                  return;
+                }
+                // Wait briefly for profile trigger, then load
+                let pilot = null;
+                if (data.user) {
+                  await new Promise(r => setTimeout(r, 400));
+                  pilot = await loadProfileForUser(data.user);
+                }
+                if (!pilot) {
+                  pilot = {
+                    id: data.user && data.user.id,
+                    username: u,
+                    display_name: d.slice(0, 20),
+                    handle: u,
+                    career_xp: 0, kills: 0, asteroids: 0, highest_tier: 0
+                  };
+                }
+                const accs = getAccounts();
+                if (!accs[u]) {
+                  accs[u] = { username: u, career_xp: 0, kills: 0, asteroids: 0, highest_tier: 0 };
+                  saveAccounts(accs);
+                }
+                activePilot = { ...accs[u], ...pilot, username: u, display_name: pilot.display_name || d };
+                sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+                initMyShip();
+                menuMode = "main";
+                statusMessage = `Welcome to AstraClash, ${activePilot.display_name}.`;
+                statusColor = CYAN;
+              } else {
+                const { data, error } = await sb.auth.signInWithPassword({
+                  email,
+                  password: p
+                });
+                if (error) {
+                  authMessage = (error.message || "LOGIN FAILED").toUpperCase().slice(0, 48);
+                  authBusy = false;
+                  return;
+                }
+                const pilot = await loadProfileForUser(data.user);
+                const accs = getAccounts();
+                const local = accs[u] || { username: u, career_xp: 0, kills: 0, asteroids: 0, highest_tier: 0 };
+                if (!accs[u]) { accs[u] = local; saveAccounts(accs); }
+                activePilot = {
+                  ...local,
+                  id: pilot.id,
+                  username: pilot.username || u,
+                  display_name: pilot.display_name || u,
+                  handle: pilot.handle || u,
+                  coins: pilot.coins || 0
+                };
+                sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+                initMyShip();
+                menuMode = "main";
+                statusMessage = `Welcome back, ${activePilot.display_name}.`;
+                statusColor = CYAN;
+              }
+            } catch (err) {
+              authMessage = "NETWORK ERROR — TRY AGAIN";
+              console.warn(err);
             }
-          }
+            authBusy = false;
+          })();
         }
       } else if (menuMode === "main") {
         if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 185 && pos.y <= 233) {
@@ -1338,9 +1483,12 @@
           sessionStorage.removeItem("astraclash_current_user");
           activePilot = null;
           authNameInput = "";
+          authDisplayInput = "";
           authPassInput = "";
+          authMessage = "";
           menuMode = "account";
           statusMessage = "Awaiting pilot identification...";
+          if (sb) sb.auth.signOut().catch(() => {});
           openMobileKeyboard("authName");
         }
       } else if (menuMode === "host_private") {
@@ -1433,14 +1581,21 @@
         if (menuMode === "account") {
           if (e.key === "Tab") {
             e.preventDefault();
-            authActiveField = authActiveField === "name" ? "pass" : "name";
+            if (authTab === "register") {
+              authActiveField = authActiveField === "name" ? "display" : (authActiveField === "display" ? "pass" : "name");
+            } else {
+              authActiveField = authActiveField === "name" ? "pass" : "name";
+            }
           } else if (e.key === "Backspace") {
             if (authActiveField === "name") authNameInput = authNameInput.slice(0, -1);
+            else if (authActiveField === "display") authDisplayInput = authDisplayInput.slice(0, -1);
             else authPassInput = authPassInput.slice(0, -1);
           } else if (e.key.length === 1) {
-            if (authActiveField === "name" && authNameInput.length < 8 && /^[a-zA-Z0-9]$/.test(e.key)) {
-              authNameInput += e.key.toUpperCase();
-            } else if (authActiveField === "pass" && authPassInput.length < 12) {
+            if (authActiveField === "name" && authNameInput.length < 16 && /^[a-zA-Z0-9_]$/.test(e.key)) {
+              authNameInput += e.key.toLowerCase();
+            } else if (authActiveField === "display" && authDisplayInput.length < 20) {
+              authDisplayInput += e.key;
+            } else if (authActiveField === "pass" && authPassInput.length < 32) {
               authPassInput += e.key;
             }
           }
@@ -1763,52 +1918,71 @@
           vctx.fillText("RETRY CONNECTION", cx, 460);
         }
       } else if (menuMode === "account") {
-        drawCard(vctx, cx - 190, 120, 380, 300, CYAN);
-        
+        const panelH = authTab === "register" ? 360 : 310;
+        drawCard(vctx, cx - 190, 110, 380, panelH, CYAN);
+
         // Tabs
         const isReg = authTab === "register";
-        drawCard(vctx, cx - 150, 140, 140, 35, isReg ? CYAN : DARK_GRAY);
+        drawCard(vctx, cx - 150, 130, 140, 35, isReg ? CYAN : DARK_GRAY);
         vctx.font = "bold 14px Consolas";
         vctx.fillStyle = isReg ? CYAN : GRAY;
         vctx.textAlign = "center";
-        vctx.fillText("NEW PILOT", cx - 80, 162);
+        vctx.fillText("SIGN UP", cx - 80, 152);
 
-        drawCard(vctx, cx + 10, 140, 140, 35, !isReg ? CYAN : DARK_GRAY);
+        drawCard(vctx, cx + 10, 130, 140, 35, !isReg ? CYAN : DARK_GRAY);
         vctx.fillStyle = !isReg ? CYAN : GRAY;
-        vctx.fillText("LOGIN", cx + 80, 162);
+        vctx.fillText("SIGN IN", cx + 80, 152);
 
-        // Inputs
+        // Username
         vctx.font = "11px Consolas";
         vctx.fillStyle = WHITE;
         vctx.textAlign = "left";
-        vctx.fillText("CALLSIGN (Max 8 letters):", cx - 140, 202);
-        drawCard(vctx, cx - 140, 210, 280, 38, authActiveField === "name" ? RAINBOW[3] : GRAY);
+        vctx.fillText("USERNAME (login id):", cx - 140, 180);
+        drawCard(vctx, cx - 140, 185, 280, 38, authActiveField === "name" ? RAINBOW[3] : GRAY);
         vctx.font = "bold 16px Consolas";
         vctx.fillStyle = RAINBOW[3];
-        vctx.fillText(authNameInput + (authActiveField === "name" ? "|" : ""), cx - 130, 234);
+        vctx.fillText(authNameInput + (authActiveField === "name" ? "|" : ""), cx - 130, 209);
+
+        let nextY = 245;
+        if (isReg) {
+          vctx.font = "11px Consolas";
+          vctx.fillStyle = WHITE;
+          vctx.fillText("DISPLAY NAME (shown in-game):", cx - 140, 240);
+          drawCard(vctx, cx - 140, 245, 280, 38, authActiveField === "display" ? RAINBOW[3] : GRAY);
+          vctx.font = "bold 16px Consolas";
+          vctx.fillStyle = RAINBOW[3];
+          vctx.fillText(authDisplayInput + (authActiveField === "display" ? "|" : ""), cx - 130, 269);
+          nextY = 305;
+        }
 
         vctx.font = "11px Consolas";
         vctx.fillStyle = WHITE;
-        vctx.fillText("PASS-KEY (Secret):", cx - 140, 262);
-        drawCard(vctx, cx - 140, 270, 280, 38, authActiveField === "pass" ? RAINBOW[3] : GRAY);
+        vctx.fillText("PASSWORD:", cx - 140, nextY - 5);
+        drawCard(vctx, cx - 140, nextY, 280, 38, authActiveField === "pass" ? RAINBOW[3] : GRAY);
         vctx.font = "bold 16px Consolas";
         vctx.fillStyle = RAINBOW[3];
         const masked = "•".repeat(authPassInput.length);
-        vctx.fillText(masked + (authActiveField === "pass" ? "|" : ""), cx - 130, 294);
+        vctx.fillText(masked + (authActiveField === "pass" ? "|" : ""), cx - 130, nextY + 24);
 
+        const msgY = nextY + 55;
         if (authMessage) {
           vctx.font = "bold 11px Consolas";
-          vctx.fillStyle = RAINBOW[1];
+          vctx.fillStyle = authBusy ? RAINBOW[3] : RAINBOW[1];
           vctx.textAlign = "center";
-          vctx.fillText(authMessage, cx, 323);
+          vctx.fillText(authMessage, cx, msgY);
         }
 
-        const canAct = authNameInput.trim().length >= 2;
-        drawCard(vctx, cx - 140, 335, 280, 45, canAct ? RAINBOW[4] : DARK_GRAY);
+        const actY = msgY + 12;
+        const canAct = authNameInput.trim().length >= 2 && authPassInput.length >= 6 && !authBusy;
+        drawCard(vctx, cx - 140, actY, 280, 45, canAct ? RAINBOW[4] : DARK_GRAY);
         vctx.font = "bold 15px Consolas";
         vctx.fillStyle = canAct ? WHITE : GRAY;
         vctx.textAlign = "center";
-        vctx.fillText(isReg ? "CREATE PILOT PROFILE" : "AUTHENTICATE", cx, 362);
+        vctx.fillText(authBusy ? "PLEASE WAIT..." : (isReg ? "CREATE ACCOUNT" : "SIGN IN"), cx, actY + 27);
+
+        vctx.font = "10px Consolas";
+        vctx.fillStyle = GRAY;
+        vctx.fillText("Same account works on Paradox · username only (no email needed)", cx, actY + 55);
 
       } else if (menuMode === "waiting") {
         drawCard(vctx, cx - 200, 180, 400, 260, CYAN);
@@ -1836,7 +2010,7 @@
           vctx.font = "bold 13px Consolas";
           vctx.fillStyle = RAINBOW[4];
           vctx.textAlign = "left";
-          vctx.fillText(`PILOT: ${activePilot.username}`, cx - 235, 136);
+          vctx.fillText(`PILOT: ${activePilot.display_name || activePilot.username}`, cx - 235, 136);
           vctx.fillStyle = WHITE;
           vctx.font = "11px Consolas";
           vctx.fillText(`CAREER XP: ${activePilot.career_xp || 0}   ASTEROIDS: ${activePilot.asteroids || 0}   MAX TIER: ${activePilot.highest_tier || 0}`, cx - 235, 154);
