@@ -460,10 +460,20 @@
       { id: "soul_stealer", label: "Soul Stealer" }
     ];
     const SHOP_TRAILS = [
-      { id: "ghost", label: "Ghost", color: "rgba(255,255,255,0.85)", rarity: "common" },
-      { id: "soul", label: "Soul", color: "rgba(0,255,255,0.9)", rarity: "uncommon" },
-      { id: "laser", label: "Laser", color: "rgba(255,40,60,0.95)", rarity: "rare" }
+      // Buyable / random-roll (no blueprints)
+      { id: "ghost", label: "Ghost", color: "rgba(255,255,255,0.85)", rarity: "common", buy: 2000, weight: 55 },
+      { id: "soul", label: "Soul", color: "rgba(0,255,255,0.9)", rarity: "uncommon", buy: 2250, weight: 30 },
+      { id: "laser", label: "Laser", color: "rgba(255,40,60,0.95)", rarity: "rare", buy: 2750, weight: 15 },
+      // Blueprint-only specials — drop weight (higher = more common). Void is rarest.
+      { id: "gold", label: "Gold", color: "rgba(255, 215, 40, 0.95)", rarity: "bp", bp: true, drop: 22 },
+      { id: "lime", label: "Lime", color: "rgba(140, 255, 50, 0.95)", rarity: "bp", bp: true, drop: 18 },
+      { id: "pink", label: "Pink", color: "rgba(255, 90, 180, 0.95)", rarity: "bp", bp: true, drop: 15 },
+      { id: "ice", label: "Ice", color: "rgba(180, 230, 255, 0.95)", rarity: "bp", bp: true, drop: 10 },
+      { id: "void", label: "Void", color: "rgba(120, 40, 200, 0.95)", rarity: "bp", bp: true, drop: 3 }
     ];
+    const SHOP_TRAIL_BP_NEEDED = 5;
+    const SHOP_TRAIL_BP_CRATE_COST = 200;
+    const SHOP_MEGA_BP_CRATE_COST = 550; // 3-click animated crate → 3 random BPs (color or trail)
     // Colors with a `price` are bought outright with coins (no blueprints).
     // Colors with a `drop` weight are earn-only: blueprints drop from matches/contracts,
     // and a higher weight = more common. void_black is ~8x rarer than the next rarest.
@@ -519,7 +529,7 @@
         inv: {
           plusLevel: 0, plusLevel2: 0, magnetBoost: 0, manaPack: 0, hull: 0,
           thrusters: 0, missileBattery: 0, secondWind: 0, killStreak: 0,
-          titles: [], trails: [], colors: [], blueprints: [], colorBlueprints: {},
+          titles: [], trails: [], colors: [], blueprints: [], colorBlueprints: {}, trailBlueprints: {},
           killBadge: false, shipStockpile: false, shipColor: false
         },
         armed: {},
@@ -548,8 +558,10 @@
         d.inv = { ...d.inv, ...(raw.inv || {}) };
         d.inv.titles = Array.isArray(raw.inv && raw.inv.titles) ? raw.inv.titles : [];
         d.inv.trails = Array.isArray(raw.inv && raw.inv.trails) ? raw.inv.trails : [];
+        d.inv.trailBlueprints = (raw.inv && raw.inv.trailBlueprints && typeof raw.inv.trailBlueprints === "object")
+          ? raw.inv.trailBlueprints : {};
         d.inv.colors = Array.isArray(raw.inv && raw.inv.colors) ? raw.inv.colors : [];
-        d.inv.blueprints = Array.isArray(raw.inv && raw.inv.blueprints) ? raw.inv.blueprints : [];
+        d.inv.blueprints = Array.isArray(raw.inv && raw.inv.blueprints) ? raw.inv.blueprints.slice(0, 1) : [];
         d.inv.colorBlueprints = (raw.inv && raw.inv.colorBlueprints && typeof raw.inv.colorBlueprints === "object")
           ? raw.inv.colorBlueprints : {};
         d.inv.shipStockpile = !!(raw.inv && raw.inv.shipStockpile);
@@ -694,30 +706,46 @@
     async function refreshCoins() {
       if (!sb || !activePilot) return;
       try {
-        const { data } = await getMyProfileSafe();
-        if (data && Number.isFinite(Number(data.coins))) {
+        const { data, error } = await getMyProfileSafe();
+        if (!error && data && Number.isFinite(Number(data.coins))) {
           activePilot.coins = Number(data.coins);
+          if (data.id) activePilot.id = data.id;
+          if (data.handle) activePilot.handle = data.handle;
+          if (data.display_name) activePilot.display_name = data.display_name;
           sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
         }
-      } catch (e) {}
+      } catch (e) { console.warn("refreshCoins", e); }
     }
     async function getMyProfileSafe() {
-      if (!sb) return { data: null };
-      const { data: { user } } = await sb.auth.getUser();
-      if (!user) return { data: null };
+      if (!sb) return { data: null, error: { message: "no sb" } };
+      const { data: { user }, error: uErr } = await sb.auth.getUser();
+      if (uErr || !user) return { data: null, error: uErr || { message: "not signed in" } };
+      // Ensure activePilot keeps the auth user id
+      if (activePilot && !activePilot.id) activePilot.id = user.id;
       return await sb.from("profiles").select("*").eq("id", user.id).single();
     }
     async function addCoinsDelta(amount) {
-      if (!sb || !activePilot || !activePilot.id) {
+      if (!sb || !activePilot) {
         return { error: { message: "Sign in required" } };
       }
+      // Resolve user id from session if missing on activePilot
+      let uid = activePilot.id;
+      if (!uid) {
+        try {
+          const { data: { user } } = await sb.auth.getUser();
+          if (user) { uid = user.id; activePilot.id = user.id; }
+        } catch (e) {}
+      }
+      if (!uid) return { error: { message: "Sign in required" } };
       const { data, error } = await sb.rpc("add_coins", {
-        p_user_id: activePilot.id,
+        p_user_id: uid,
         p_amount: amount
       });
       if (!error && data !== null && data !== undefined) {
         activePilot.coins = Number(data);
         sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+      } else if (error) {
+        console.warn("add_coins error", error);
       }
       return { data, error };
     }
@@ -733,10 +761,103 @@
       return t;
     }
     function rollRandomTrail() {
-      const r = Math.random();
-      if (r < 0.55) return "ghost";
-      if (r < 0.85) return "soul";
-      return "laser";
+      // Only buyable trails you do not already own (no repeats)
+      const owned = (shopData.inv && shopData.inv.trails) ? shopData.inv.trails : [];
+      const pool = SHOP_TRAILS.filter(t => t.buy && !t.bp && !owned.includes(t.id));
+      if (pool.length === 0) return null;
+      const total = pool.reduce((s, t) => s + (t.weight || 1), 0);
+      let r = Math.random() * total;
+      for (const t of pool) {
+        r -= (t.weight || 1);
+        if (r <= 0) return t.id;
+      }
+      return pool[pool.length - 1].id;
+    }
+    function trailBpCount(trailId) {
+      return (shopData.inv.trailBlueprints && shopData.inv.trailBlueprints[trailId]) || 0;
+    }
+    /** Grant one BP toward a random locked special trail (or forced id). */
+    function grantTrailBlueprint(forcedId) {
+      if (!shopData.inv.trailBlueprints) shopData.inv.trailBlueprints = {};
+      if (!shopData.inv.trails) shopData.inv.trails = [];
+      const specials = SHOP_TRAILS.filter(t => t.bp);
+      let trailId = forcedId;
+      if (!trailId || !specials.some(t => t.id === trailId)) {
+        // Weighted among BP trails (void rarest)
+        const total = specials.reduce((s, t) => s + (t.drop || 1), 0);
+        let r = Math.random() * total;
+        trailId = specials[specials.length - 1].id;
+        for (const t of specials) {
+          r -= (t.drop || 1);
+          if (r <= 0) { trailId = t.id; break; }
+        }
+      }
+      const prev = shopData.inv.trailBlueprints[trailId] || 0;
+      const next = prev + 1;
+      shopData.inv.trailBlueprints[trailId] = next;
+      let unlocked = false;
+      if (next >= SHOP_TRAIL_BP_NEEDED && !shopData.inv.trails.includes(trailId)) {
+        shopData.inv.trails.push(trailId);
+        unlocked = true;
+      }
+      saveShop(shopData);
+      return { trailId, unlocked, count: next };
+    }
+    /** Build weighted pool of any BP type: earnable colors + special trails. */
+    function bpCratePool() {
+      const pool = [];
+      for (const c of SHOP_COLORS) {
+        if (!c.price && c.drop > 0) pool.push({ kind: "color", id: c.id, label: c.label, weight: c.drop, swatch: c.rgb });
+      }
+      for (const t of SHOP_TRAILS) {
+        if (t.bp) pool.push({ kind: "trail", id: t.id, label: t.label + " Trail", weight: t.drop || 1, swatch: t.color });
+      }
+      return pool;
+    }
+    function rollOneFromBpPool() {
+      const pool = bpCratePool();
+      const total = pool.reduce((s, p) => s + p.weight, 0);
+      let r = Math.random() * total;
+      for (const p of pool) {
+        r -= p.weight;
+        if (r <= 0) return p;
+      }
+      return pool[pool.length - 1];
+    }
+    function grantRolledBp(entry) {
+      if (entry.kind === "color") {
+        const g = grantColorBlueprint(entry.id);
+        return {
+          kind: "color", id: entry.id, label: entry.label, swatch: entry.swatch,
+          count: g.count, unlocked: g.unlockedColor, stockpile: g.stockpile
+        };
+      }
+      const g = grantTrailBlueprint(entry.id);
+      return {
+        kind: "trail", id: entry.id, label: entry.label, swatch: entry.swatch,
+        count: g.count, unlocked: g.unlocked, stockpile: false
+      };
+    }
+    // Mega BP crate animation: click 3 times to crack open, then reveal 3 rewards
+    let bpCrateUI = null; // { clicks, rewards, phase: "shake"|"reveal", t0 }
+    function openMegaBpCrate() {
+      bpCrateUI = { clicks: 0, rewards: null, phase: "shake", t0: performance.now() };
+    }
+    function clickMegaBpCrate() {
+      if (!bpCrateUI || bpCrateUI.phase === "reveal") return;
+      bpCrateUI.clicks = Math.min(3, (bpCrateUI.clicks || 0) + 1);
+      bpCrateUI.t0 = performance.now();
+      if (bpCrateUI.clicks >= 3) {
+        const rewards = [];
+        for (let i = 0; i < 3; i++) rewards.push(grantRolledBp(rollOneFromBpPool()));
+        bpCrateUI.rewards = rewards;
+        bpCrateUI.phase = "reveal";
+        bpCrateUI.t0 = performance.now();
+        saveShop(shopData);
+      }
+    }
+    function closeMegaBpCrate() {
+      bpCrateUI = null;
     }
     function rollRandomTitle() {
       return SHOP_TITLES[Math.floor(Math.random() * SHOP_TITLES.length)].id;
@@ -1089,12 +1210,19 @@
     function recordAccountStat(stat, val) {
       if (!activePilot) return;
       const accs = getAccounts();
-      if (accs[activePilot.username]) {
-        accs[activePilot.username][stat] = (accs[activePilot.username][stat] || 0) + val;
-        saveAccounts(accs);
-        activePilot = accs[activePilot.username];
-        sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
+      const key = activePilot.username || activePilot.handle;
+      if (!key) return;
+      if (!accs[key]) {
+        accs[key] = { username: key, career_xp: 0, kills: 0, asteroids: 0, highest_tier: 0 };
       }
+      accs[key][stat] = (accs[key][stat] || 0) + val;
+      saveAccounts(accs);
+      // Merge local career stats into activePilot — never wipe id/coins/display_name
+      activePilot.career_xp = accs[key].career_xp || 0;
+      activePilot.kills = accs[key].kills || 0;
+      activePilot.asteroids = accs[key].asteroids || 0;
+      activePilot.highest_tier = accs[key].highest_tier || 0;
+      sessionStorage.setItem("astraclash_current_user", JSON.stringify(activePilot));
     }
 
     function takeDamage(dmg) {
@@ -1239,19 +1367,22 @@
                   // Use previous pose so exhaust sits where their engines were (matches own-screen trail)
                   const ang = Number.isFinite(prev.angle) ? prev.angle : (Number(s.angle) || 0);
                   const rad = (ang * Math.PI) / 180;
-                  const col = prev.color || RAINBOW[Number(sId)] || RAINBOW[2];
-                  // Subdivide long steps so trails look continuous like local 60fps thrust trails
-                  const steps = Math.min(4, Math.max(1, Math.floor(Math.sqrt(distSq) / 8)));
-                  for (let s = 0; s < steps; s++) {
-                    const t = (s + 1) / (steps + 1);
-                    const px = prev.world_x + dx * t;
-                    const py = prev.world_y + dy * t;
-                    trails.push({
-                      x: px - Math.cos(rad) * SHIP_SIZE,
-                      y: py + Math.sin(rad) * SHIP_SIZE,
-                      life: 1.0,
-                      color: col
-                    });
+                  // Only show exhaust if they have an equipped trail (null = no trail)
+                  const remoteTrail = (s.trail !== undefined ? s.trail : (prev && prev.trail)) || null;
+                  const trailCol = remoteTrail ? trailColorFor(remoteTrail) : null;
+                  if (trailCol) {
+                    const steps = Math.min(4, Math.max(1, Math.floor(Math.sqrt(distSq) / 8)));
+                    for (let s = 0; s < steps; s++) {
+                      const t = (s + 1) / (steps + 1);
+                      const px = prev.world_x + dx * t;
+                      const py = prev.world_y + dy * t;
+                      trails.push({
+                        x: px - Math.cos(rad) * SHIP_SIZE,
+                        y: py + Math.sin(rad) * SHIP_SIZE,
+                        life: 1.0,
+                        color: trailCol
+                      });
+                    }
                   }
                 }
               }
@@ -1265,6 +1396,7 @@
                 alive: incomingAlive, 
                 xp: Number.isFinite(Number(s.xp)) ? Number(s.xp) : 0, 
                 tier: Number.isFinite(Number(s.tier)) ? Number(s.tier) : tierFromXp(Number(s.xp) || 0),
+                trail: s.trail !== undefined ? s.trail : (prev && prev.trail) || null,
                 kills: Number.isFinite(Number(s.kills)) ? Number(s.kills) : (prev && prev.kills) || 0, 
                 stasis: Boolean(s.stasis), 
                 is_charging_shield: Boolean(s.is_charging_shield),
@@ -2093,6 +2225,19 @@
           openMobileKeyboard("authName");
         }
       } else if (menuMode === "shop") {
+        // Mega BP crate overlay takes priority — block other shop clicks
+        if (bpCrateUI) {
+          if (bpCrateUI.phase === "shake") {
+            if (pos.x >= cx - 90 && pos.x <= cx + 90 && pos.y >= 220 && pos.y <= 380) {
+              clickMegaBpCrate();
+            }
+          } else if (bpCrateUI.phase === "reveal") {
+            if (pos.x >= cx - 80 && pos.x <= cx + 80 && pos.y >= 420 && pos.y <= 456) {
+              closeMegaBpCrate();
+              shopMessage = "BPS ADDED TO INVENTORY";
+            }
+          }
+        } else {
         // Tabs
         if (pos.y >= 148 && pos.y <= 176) {
           if (pos.x >= cx - 230 && pos.x <= cx - 155) { shopTab = "boosts"; shopMessage = ""; }
@@ -2111,11 +2256,11 @@
         else if (shopTab === "boosts") {
           const items = SHOP_CONSUMABLES;
           for (let i = 0; i < items.length; i++) {
-            const rowY = 160 + i * 36;
+            const rowY = 200 + i * 32; // match render
             const it = items[i];
             const owned = (shopData.inv[it.id] || 0);
             // Buy button right side
-            if (pos.x >= cx + 95 && pos.x <= cx + 175 && pos.y >= rowY && pos.y <= rowY + 30) {
+            if (pos.x >= cx + 100 && pos.x <= cx + 170 && pos.y >= rowY + 2 && pos.y <= rowY + 26) {
               if (owned >= it.maxOwn) { shopMessage = "MAX OWNED"; }
               else if (getCoins() < it.cost) { shopMessage = "NOT ENOUGH COINS"; }
               else {
@@ -2132,7 +2277,7 @@
               }
             }
             // Arm toggle
-            if (pos.x >= cx + 180 && pos.x <= cx + 230 && pos.y >= rowY && pos.y <= rowY + 30) {
+            if (pos.x >= cx + 175 && pos.x <= cx + 215 && pos.y >= rowY + 2 && pos.y <= rowY + 26) {
               if (owned <= 0) { shopMessage = "BUY FIRST"; }
               else {
                 const on = !!shopData.armed[it.id];
@@ -2148,15 +2293,16 @@
             }
           }
         } else if (shopTab === "trails") {
-          // Random trail 500
-          if (pos.x >= cx - 200 && pos.x <= cx - 20 && pos.y >= 170 && pos.y <= 210) {
+          // Random trail 500 — matches drawCard(cx-200, 200, 180, 36)
+          if (pos.x >= cx - 220 && pos.x <= cx - 30 && pos.y >= 198 && pos.y <= 232) {
             if (getCoins() < 500) shopMessage = "NEED 500 COINS";
             else {
               shopBusy = true; shopMessage = "ROLLING...";
               (async () => {
+                const id = rollRandomTrail();
+                if (!id) { shopMessage = "ALL BUYABLE TRAILS OWNED"; shopBusy = false; return; }
                 const { error } = await addCoinsDelta(-500);
                 if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
-                const id = rollRandomTrail();
                 if (!shopData.inv.trails.includes(id)) shopData.inv.trails.push(id);
                 shopData.activeTrail = id;
                 saveShop(shopData);
@@ -2165,62 +2311,73 @@
               })();
             }
           }
-          const picks = [
-            { id: "ghost", cost: 2000, x0: cx - 200, y0: 230 },
-            { id: "soul", cost: 2250, x0: cx - 200, y0: 280 },
-            { id: "laser", cost: 2750, x0: cx - 200, y0: 330 }
-          ];
-          for (const p of picks) {
-            if (pos.x >= p.x0 && pos.x <= p.x0 + 180 && pos.y >= p.y0 && pos.y <= p.y0 + 36) {
+          // Trail BP crate (right of random)
+          if (pos.x >= cx + 20 && pos.x <= cx + 200 && pos.y >= 200 && pos.y <= 236) {
+            if (getCoins() < SHOP_TRAIL_BP_CRATE_COST) shopMessage = `NEED ${SHOP_TRAIL_BP_CRATE_COST} COINS`;
+            else {
+              shopBusy = true; shopMessage = "OPENING...";
+              (async () => {
+                const { error } = await addCoinsDelta(-SHOP_TRAIL_BP_CRATE_COST);
+                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                const g = grantTrailBlueprint();
+                const tr = SHOP_TRAILS.find(t => t.id === g.trailId);
+                const name = (tr ? tr.label : g.trailId || "?").toUpperCase();
+                shopMessage = g.unlocked ? `TRAIL UNLOCKED: ${name}!` : `TRAIL BP: ${name} (${g.count}/${SHOP_TRAIL_BP_NEEDED})`;
+                shopBusy = false; refreshCoins();
+              })();
+            }
+          }
+          // MEGA BP CRATE — 3 clicks, 3 random BPs (color or trail)
+          if (!bpCrateUI && pos.x >= cx - 120 && pos.x <= cx + 120 && pos.y >= 450 && pos.y <= 486) {
+            if (getCoins() < SHOP_MEGA_BP_CRATE_COST) shopMessage = `NEED ${SHOP_MEGA_BP_CRATE_COST} COINS`;
+            else {
+              shopBusy = true;
+              (async () => {
+                const { error } = await addCoinsDelta(-SHOP_MEGA_BP_CRATE_COST);
+                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
+                openMegaBpCrate();
+                shopBusy = false; refreshCoins();
+              })();
+            }
+          }
+          // Buyable trails (left column) + BP trails (right) — layout matches render
+          const buyable = SHOP_TRAILS.filter(t => t.buy && !t.bp);
+          for (let i = 0; i < buyable.length; i++) {
+            const p = buyable[i];
+            const y0 = 250 + i * 42;
+            if (pos.x >= cx - 220 && pos.x <= cx - 20 && pos.y >= y0 && pos.y <= y0 + 36) {
               if (shopData.inv.trails.includes(p.id)) {
-                shopData.activeTrail = p.id; saveShop(shopData); shopMessage = `EQUIPPED ${p.id.toUpperCase()}`;
-              } else if (getCoins() < p.cost) shopMessage = "NOT ENOUGH COINS";
+                shopData.activeTrail = p.id; saveShop(shopData); shopMessage = `EQUIPPED ${p.label.toUpperCase()}`;
+              } else if (getCoins() < p.buy) shopMessage = "NOT ENOUGH COINS";
               else {
                 shopBusy = true;
                 (async () => {
-                  const { error } = await addCoinsDelta(-p.cost);
+                  const { error } = await addCoinsDelta(-p.buy);
                   if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
                   if (!shopData.inv.trails.includes(p.id)) shopData.inv.trails.push(p.id);
                   shopData.activeTrail = p.id; saveShop(shopData);
-                  shopMessage = `UNLOCKED ${p.id.toUpperCase()}`;
+                  shopMessage = `UNLOCKED ${p.label.toUpperCase()}`;
                   shopBusy = false; refreshCoins();
                 })();
               }
             }
           }
-          // Ship color 1500
-          if (pos.x >= cx + 20 && pos.x <= cx + 200 && pos.y >= 230 && pos.y <= 270) {
-            if (shopData.inv.shipColor) { shopMessage = "ALREADY OWNED"; }
-            else if (getCoins() < 1500) shopMessage = "NEED 1500 COINS";
-            else {
-              shopBusy = true;
-              (async () => {
-                const { error } = await addCoinsDelta(-1500);
-                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
-                shopData.inv.shipColor = true;
-                const palette = ["rgb(255,80,80)","rgb(255,180,40)","rgb(80,255,120)","rgb(80,180,255)","rgb(200,80,255)","rgb(255,80,200)"];
-                shopData.shipColorHex = palette[Math.floor(Math.random() * palette.length)];
-                saveShop(shopData); shopMessage = "SHIP COLOR UNLOCKED"; shopBusy = false; refreshCoins();
-              })();
-            }
-          }
-          // Kill badge 2000
-          if (pos.x >= cx + 20 && pos.x <= cx + 200 && pos.y >= 290 && pos.y <= 330) {
-            if (shopData.inv.killBadge) shopMessage = "ALREADY OWNED";
-            else if (getCoins() < 2000) shopMessage = "NEED 2000 COINS";
-            else {
-              shopBusy = true;
-              (async () => {
-                const { error } = await addCoinsDelta(-2000);
-                if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
-                shopData.inv.killBadge = true; saveShop(shopData);
-                shopMessage = "KILL BADGE UNLOCKED"; shopBusy = false; refreshCoins();
-              })();
+          const specials = SHOP_TRAILS.filter(t => t.bp);
+          for (let i = 0; i < specials.length; i++) {
+            const p = specials[i];
+            const y0 = 250 + i * 36;
+            if (pos.x >= cx + 20 && pos.x <= cx + 220 && pos.y >= y0 && pos.y <= y0 + 32) {
+              if (shopData.inv.trails.includes(p.id)) {
+                shopData.activeTrail = p.id; saveShop(shopData); shopMessage = `EQUIPPED ${p.label.toUpperCase()}`;
+              } else {
+                const n = trailBpCount(p.id);
+                shopMessage = `${p.label.toUpperCase()} ${n}/${SHOP_TRAIL_BP_NEEDED} BPS`;
+              }
             }
           }
         } else if (shopTab === "titles") {
-          // Random title 800
-          if (pos.x >= cx - 180 && pos.x <= cx + 180 && pos.y >= 170 && pos.y <= 210) {
+          // Random title 800 — drawCard(cx-180, 200, 360, 36)
+          if (pos.x >= cx - 180 && pos.x <= cx + 180 && pos.y >= 200 && pos.y <= 236) {
             if (getCoins() < 800) shopMessage = "NEED 800 COINS";
             else {
               shopBusy = true;
@@ -2237,7 +2394,8 @@
           }
           for (let i = 0; i < SHOP_TITLES.length; i++) {
             const t = SHOP_TITLES[i];
-            const rowY = 230 + i * 40;
+            // render uses rowY = 250 + i * 38, h 34
+            const rowY = 250 + i * 38;
             if (pos.x >= cx - 180 && pos.x <= cx + 180 && pos.y >= rowY && pos.y <= rowY + 34) {
               if (shopData.inv.titles.includes(t.id)) {
                 shopData.activeTitle = t.id; saveShop(shopData); shopMessage = `TITLE: ${t.label}`;
@@ -2299,33 +2457,39 @@
             const id = contractData.list[i];
             const def = CONTRACT_POOL.find(c => c.id === id);
             if (!def) continue;
-            const rowY = 190 + i * 70;
-            if (pos.x >= cx + 80 && pos.x <= cx + 200 && pos.y >= rowY + 20 && pos.y <= rowY + 50) {
+            // render: rowY = 200 + i*70; claim btn (cx+100, rowY+14, 100, 32)
+            const rowY = 200 + i * 70;
+            if (pos.x >= cx + 100 && pos.x <= cx + 200 && pos.y >= rowY + 14 && pos.y <= rowY + 46) {
               claimContract(id);
             }
           }
         } else if (shopTab === "blueprints") {
           for (let i = 0; i < SHOP_BLUEPRINTS.length; i++) {
             const bp = SHOP_BLUEPRINTS[i];
-            const rowY = 185 + i * 48;
-            if (pos.x >= cx + 80 && pos.x <= cx + 200 && pos.y >= rowY && pos.y <= rowY + 40) {
-              const own = shopData.inv.blueprints.includes(bp.id);
+            // render: rowY = 200 + i*48; buy btn (cx+100, rowY+6, 100, 30)
+            const rowY = 200 + i * 48;
+            if (pos.x >= cx + 100 && pos.x <= cx + 200 && pos.y >= rowY + 6 && pos.y <= rowY + 36) {
+              const ownedList = shopData.inv.blueprints || [];
+              const own = ownedList.includes(bp.id);
               if (own) { shopMessage = "ALREADY OWNED"; }
+              else if (ownedList.length >= 1) { shopMessage = "MAX 1 BLUEPRINT — SELL/REPLACE NOT AVAILABLE"; }
               else if (getCoins() < bp.cost) { shopMessage = "NOT ENOUGH COINS"; }
               else {
                 shopBusy = true;
                 (async () => {
                   const { error } = await addCoinsDelta(-bp.cost);
                   if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
-                  shopData.inv.blueprints.push(bp.id);
+                  // Hard cap: only one module blueprint total
+                  shopData.inv.blueprints = [bp.id];
                   saveShop(shopData);
-                  shopMessage = `UNLOCKED ${bp.name}`;
+                  shopMessage = `UNLOCKED ${bp.name} (MAX 1)`;
                   shopBusy = false; refreshCoins();
                 })();
               }
             }
           }
         }
+        } // end else (!bpCrateUI)
 
       } else if (menuMode === "host_private") {
         // Entry fee row
@@ -2959,32 +3123,58 @@
               vctx.fillText(armed ? "ON" : "ARM", cx + 195, rowY + 18);
             }
           } else if (shopTab === "trails") {
-            vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
-            vctx.fillText("Ghost common · Soul uncommon · Laser rare", cx, 192);
-            drawCard(vctx, cx - 200, 200, 180, 36, CYAN);
-            vctx.font = "bold 12px Consolas"; vctx.fillStyle = CYAN;
-            vctx.fillText("RANDOM TRAIL 500c", cx - 110, 223);
-            const picks = [
-              { id: "ghost", cost: 2000, label: "GHOST (White)", y: 250 },
-              { id: "soul", cost: 2250, label: "SOUL (Cyan)", y: 295 },
-              { id: "laser", cost: 2750, label: "LASER (Crimson)", y: 340 }
-            ];
-            for (const p of picks) {
+            vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+            vctx.fillText("Random skips owned · Gold/Void/Lime/Pink/Ice need trail BPs", cx, 188);
+            drawCard(vctx, cx - 220, 198, 190, 34, CYAN);
+            vctx.font = "bold 11px Consolas"; vctx.fillStyle = CYAN;
+            vctx.fillText("RANDOM TRAIL 500c", cx - 125, 220);
+            drawCard(vctx, cx + 20, 198, 190, 34, ORE_GOLD);
+            vctx.fillStyle = ORE_GOLD;
+            vctx.fillText(`TRAIL BP CRATE ${SHOP_TRAIL_BP_CRATE_COST}c`, cx + 115, 220);
+            // Buyable column
+            const buyable = SHOP_TRAILS.filter(t => t.buy && !t.bp);
+            for (let i = 0; i < buyable.length; i++) {
+              const p = buyable[i];
+              const y0 = 250 + i * 42;
               const own = shopData.inv.trails.includes(p.id);
               const eq = shopData.activeTrail === p.id;
-              drawCard(vctx, cx - 200, p.y, 180, 36, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
-              vctx.font = "11px Consolas"; vctx.fillStyle = WHITE;
-              vctx.fillText(own ? (eq ? `EQUIPPED ${p.label}` : `EQUIP ${p.label}`) : `${p.label} ${p.cost}c`, cx - 110, p.y + 23);
+              drawCard(vctx, cx - 220, y0, 200, 36, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
+              vctx.fillStyle = p.color;
+              vctx.fillRect(cx - 212, y0 + 8, 18, 18);
+              vctx.font = "11px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+              vctx.fillText(own ? (eq ? `★ ${p.label}` : p.label) : `${p.label} ${p.buy}c`, cx - 188, y0 + 23);
             }
-            drawCard(vctx, cx + 20, 250, 180, 36, shopData.inv.shipColor ? RAINBOW[4] : DARK_GRAY);
-            vctx.fillText(shopData.inv.shipColor ? "SHIP COLOR OWNED" : "SHIP COLOR 1500c", cx + 110, 273);
-            drawCard(vctx, cx + 20, 310, 180, 36, shopData.inv.killBadge ? RAINBOW[4] : DARK_GRAY);
-            vctx.fillText(shopData.inv.killBadge ? "KILL BADGE OWNED" : "KILL BADGE 2000c", cx + 110, 333);
+            // BP specials column
+            const specials = SHOP_TRAILS.filter(t => t.bp);
+            for (let i = 0; i < specials.length; i++) {
+              const p = specials[i];
+              const y0 = 250 + i * 36;
+              const own = shopData.inv.trails.includes(p.id);
+              const eq = shopData.activeTrail === p.id;
+              const n = trailBpCount(p.id);
+              drawCard(vctx, cx + 20, y0, 200, 32, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
+              vctx.fillStyle = p.color;
+              vctx.fillRect(cx + 28, y0 + 7, 16, 16);
+              vctx.font = "10px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+              vctx.fillText(
+                own ? (eq ? `★ ${p.label}` : p.label) : `${p.label} ${n}/${SHOP_TRAIL_BP_NEEDED}`,
+                cx + 50, y0 + 21
+              );
+            }
             if (shopData.activeTrail) {
+              vctx.textAlign = "center";
               vctx.fillStyle = trailColorFor(shopData.activeTrail) || WHITE;
               vctx.font = "12px Consolas";
-              vctx.fillText(`Active trail: ${shopData.activeTrail.toUpperCase()}`, cx, 400);
+              vctx.fillText(`Active: ${shopData.activeTrail.toUpperCase()}`, cx, 440);
+            } else {
+              vctx.textAlign = "center";
+              vctx.fillStyle = GRAY;
+              vctx.font = "11px Consolas";
+              vctx.fillText("No trail equipped", cx, 440);
             }
+            drawCard(vctx, cx - 120, 450, 240, 36, ORE_GOLD);
+            vctx.font = "bold 12px Consolas"; vctx.fillStyle = ORE_GOLD; vctx.textAlign = "center";
+            vctx.fillText(`MEGA BP CRATE ${SHOP_MEGA_BP_CRATE_COST}c · 3 BPS`, cx, 473);
           } else if (shopTab === "titles") {
             vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
             vctx.fillText("Random roll 800c · Pick any title 2500c", cx, 192);
@@ -3057,7 +3247,7 @@
             }
           } else if (shopTab === "blueprints") {
             vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
-            vctx.fillText("Permanent modules · applied at every match start", cx, 185);
+            vctx.fillText("Max 1 module BP · applied every match start", cx, 185);
             for (let i = 0; i < SHOP_BLUEPRINTS.length; i++) {
               const bp = SHOP_BLUEPRINTS[i];
               const rowY = 200 + i * 48;
@@ -3068,20 +3258,87 @@
               vctx.font = "10px Consolas"; vctx.fillStyle = GRAY;
               vctx.fillText(bp.desc, cx - 200, rowY + 34);
               vctx.textAlign = "center";
-              drawCard(vctx, cx + 100, rowY + 6, 100, 30, own ? DARK_GRAY : ORE_GOLD);
+              const hasAny = (shopData.inv.blueprints || []).length >= 1;
+              drawCard(vctx, cx + 100, rowY + 6, 100, 30, own ? RAINBOW[4] : (hasAny ? DARK_GRAY : ORE_GOLD));
               vctx.font = "11px Consolas"; vctx.fillStyle = WHITE;
-              vctx.fillText(own ? "OWNED" : `${bp.cost}c`, cx + 150, rowY + 26);
+              vctx.fillText(own ? "OWNED" : (hasAny ? "MAX 1" : `${bp.cost}c`), cx + 150, rowY + 26);
             }
 
           }
 
-          if (shopMessage) {
+          if (shopMessage && !bpCrateUI) {
             vctx.font = "bold 12px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
             vctx.fillText(shopMessage, cx, 505);
           }
-          drawCard(vctx, cx - 80, 520, 160, 32, WHITE);
-          vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
-          vctx.fillText("BACK", cx, 541);
+          if (!bpCrateUI) {
+            drawCard(vctx, cx - 80, 520, 160, 32, WHITE);
+            vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
+            vctx.fillText("BACK", cx, 541);
+          }
+
+          // ---- MEGA BP CRATE OVERLAY ----
+          if (bpCrateUI) {
+            vctx.fillStyle = "rgba(5, 8, 20, 0.88)";
+            vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+            const pulse = 1 + 0.04 * Math.sin(performance.now() / 80);
+            const shake = bpCrateUI.phase === "shake" ? (bpCrateUI.clicks * 3) : 0;
+            const ox = cx + (shake ? (Math.random() - 0.5) * shake * 2 : 0);
+            const oy = 300 + (shake ? (Math.random() - 0.5) * shake : 0);
+            if (bpCrateUI.phase === "shake") {
+              // Crate body
+              const scale = pulse;
+              vctx.save();
+              vctx.translate(ox, oy);
+              vctx.scale(scale, scale);
+              vctx.fillStyle = "rgb(180, 120, 40)";
+              vctx.strokeStyle = ORE_GOLD;
+              vctx.lineWidth = 3;
+              vctx.fillRect(-70, -50, 140, 100);
+              vctx.strokeRect(-70, -50, 140, 100);
+              // Lid
+              vctx.fillStyle = "rgb(220, 160, 50)";
+              vctx.fillRect(-75, -70, 150, 28);
+              vctx.strokeRect(-75, -70, 150, 28);
+              // Crack lines based on clicks
+              vctx.strokeStyle = "rgba(255,255,255,0.7)";
+              vctx.lineWidth = 2;
+              if (bpCrateUI.clicks >= 1) {
+                vctx.beginPath(); vctx.moveTo(-40, -20); vctx.lineTo(-10, 30); vctx.stroke();
+              }
+              if (bpCrateUI.clicks >= 2) {
+                vctx.beginPath(); vctx.moveTo(20, -30); vctx.lineTo(45, 25); vctx.stroke();
+                vctx.beginPath(); vctx.moveTo(-20, 10); vctx.lineTo(30, 40); vctx.stroke();
+              }
+              vctx.restore();
+              vctx.font = "bold 18px Consolas"; vctx.fillStyle = ORE_GOLD; vctx.textAlign = "center";
+              vctx.fillText("MEGA BP CRATE", cx, 180);
+              vctx.font = "14px Consolas"; vctx.fillStyle = WHITE;
+              vctx.fillText(`CLICK TO CRACK  ${bpCrateUI.clicks}/3`, cx, 420);
+              vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+              vctx.fillText("3 random color or trail blueprints", cx, 445);
+            } else if (bpCrateUI.phase === "reveal" && bpCrateUI.rewards) {
+              vctx.font = "bold 20px Consolas"; vctx.fillStyle = ORE_GOLD; vctx.textAlign = "center";
+              vctx.fillText("CRATE OPENED!", cx, 160);
+              for (let i = 0; i < bpCrateUI.rewards.length; i++) {
+                const r = bpCrateUI.rewards[i];
+                const ry = 200 + i * 70;
+                drawCard(vctx, cx - 180, ry, 360, 58, r.unlocked ? RAINBOW[4] : CYAN);
+                vctx.fillStyle = r.swatch || WHITE;
+                vctx.fillRect(cx - 165, ry + 12, 34, 34);
+                vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+                const kind = r.kind === "trail" ? "TRAIL BP" : "COLOR BP";
+                vctx.fillText(`${kind}: ${r.label}`, cx - 120, ry + 28);
+                vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+                let sub = `Progress ${r.count}/${r.kind === "trail" ? SHOP_TRAIL_BP_NEEDED : SHOP_COLOR_BP_NEEDED}`;
+                if (r.unlocked) sub = "UNLOCKED!";
+                if (r.stockpile) sub += " · SHIP STOCKPILE";
+                vctx.fillText(sub, cx - 120, ry + 46);
+              }
+              drawCard(vctx, cx - 80, 420, 160, 36, WHITE);
+              vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center";
+              vctx.fillText("CLAIM", cx, 443);
+            }
+          }
 
         } else if (menuMode === "host_private") {
           drawCard(vctx, cx - 230, 80, 460, 420, CYAN);
@@ -3232,7 +3489,8 @@
                   xp: myShip.xp,
                   kills: myShip.kills || 0,
                   stasis: false,
-                  name: myShip.name
+                  name: myShip.name,
+                  trail: (shopData && shopData.activeTrail) ? shopData.activeTrail : null
                 },
                 match_config: matchConfig,
                 match_time: matchTimeLeft,
@@ -3384,8 +3642,13 @@
         if (keysDown["KeyW"] || keysDown["ArrowUp"]) {
           const rad = (myShip.angle * Math.PI) / 180; const thrust = 0.065 * myShip.move_speed;
           myShip.vx += thrust * Math.cos(rad); myShip.vy -= thrust * Math.sin(rad);
-          const trailCol = (shopData && shopData.activeTrail && trailColorFor(shopData.activeTrail)) || myShip.color;
-          trails.push({x: myShip.world_x - Math.cos(rad) * SHIP_SIZE, y: myShip.world_y + Math.sin(rad) * SHIP_SIZE, life: 1.0, color: trailCol});
+          // No equipped trail → no exhaust particles
+          if (shopData && shopData.activeTrail) {
+            const trailCol = trailColorFor(shopData.activeTrail);
+            if (trailCol) {
+              trails.push({x: myShip.world_x - Math.cos(rad) * SHIP_SIZE, y: myShip.world_y + Math.sin(rad) * SHIP_SIZE, life: 1.0, color: trailCol});
+            }
+          }
         }
 
         {
@@ -3720,7 +3983,8 @@
               is_charging_shield: Boolean(myShip.is_charging_shield),
               shield_charge: Number((myShip.shield_charge || 0).toFixed(2)),
               color: myShip.color,
-              name: myShip.name 
+              name: myShip.name,
+              trail: (shopData && shopData.activeTrail) ? shopData.activeTrail : null
             } 
           };
           if (isHost()) {
