@@ -48,6 +48,7 @@ async def send_lobby_state(room):
         "roster": room_roster(room),
         "match_started": bool(room.get("match_started")),
         "allow_late_join": bool(room.get("allow_late_join")),
+        "is_public": bool(room.get("is_public")),
         "host_id": 1 if 1 in room["players"] else (min(room["players"].keys()) if room["players"] else None),
     })
 
@@ -142,8 +143,21 @@ async def handle_client(websocket):
                 await broadcast(room, {"action": "player_joined", "player_id": assigned_id, "name": name}, exclude=websocket)
                 await send_lobby_state(room)
 
+                # Public quick-play: auto-start once 2+ pilots (no host menu)
+                if (
+                    room.get("is_public")
+                    and not room.get("match_started")
+                    and len(room["players"]) >= 2
+                ):
+                    room["match_started"] = True
+                    await broadcast(room, {
+                        "action": "match_start",
+                        "allow_late_join": bool(room.get("allow_late_join")),
+                        "public_auto": True,
+                    })
+                    await send_lobby_state(room)
                 # Late join into live match
-                if room.get("match_started") and room.get("allow_late_join"):
+                elif room.get("match_started") and room.get("allow_late_join"):
                     await websocket.send(json.dumps({"action": "match_start", "late": True}))
 
             elif action == "set_name":
