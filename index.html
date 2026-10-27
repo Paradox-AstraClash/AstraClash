@@ -2610,9 +2610,7 @@
         } else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 295 && pos.y <= 353) {
           menuMode = "join_private"; roomCodeInput = ""; passwordInput = ""; activeInput = "code";
           openMobileKeyboard("roomCode");
-        } else if (lastRoomCode && pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 370 && pos.y <= 428) {
-          doRejoinLastRoom();
-        } else if (pos.x >= cx - 80 && pos.x <= cx + 80 && pos.y >= 500 && pos.y <= 536) {
+        } else if (pos.x >= cx - 80 && pos.x <= cx + 80 && pos.y >= 440 && pos.y <= 476) {
           menuMode = "main";
         }
       } else if (menuMode === "settings") {
@@ -3609,7 +3607,7 @@
         if (menuMode === "main") {
           const mainBtns = [
             { text: "QUICK PLAY", sub: "Public FFA · jump in", y: 220, col: CYAN },
-            { text: "PRIVATE MATCHES", sub: "Host · Join · Rejoin", y: 295, col: WHITE },
+            { text: "PRIVATE MATCHES", sub: "Host · Join", y: 295, col: WHITE },
             { text: "SHOP", sub: "Boosts · Cosmetics · Jobs", y: 370, col: ORE_GOLD }
           ];
           for (const b of mainBtns) {
@@ -3660,16 +3658,15 @@
             { text: "HOST ROOM", y: 220, col: CYAN },
             { text: "JOIN ROOM", y: 295, col: WHITE },
           ];
-          if (lastRoomCode) pBtns.push({ text: `REJOIN ${lastRoomCode}`, y: 370, col: RAINBOW[3] });
           for (const b of pBtns) {
             const hovered = mousePos.x >= cx - 160 && mousePos.x <= cx + 160 && mousePos.y >= b.y && mousePos.y <= b.y + 58;
             drawCard(vctx, cx - 160, b.y, 320, 58, hovered ? CYAN : b.col);
             vctx.font = "bold 16px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center";
             vctx.fillText(b.text, cx, b.y + 34);
           }
-          drawCard(vctx, cx - 80, 500, 160, 36, WHITE);
+          drawCard(vctx, cx - 80, 440, 160, 36, WHITE);
           vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
-          vctx.fillText("BACK", cx, 523);
+          vctx.fillText("BACK", cx, 463);
 
         } else if (menuMode === "settings") {
           drawCard(vctx, cx - 200, 140, 400, 300, CYAN);
