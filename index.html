@@ -2924,7 +2924,7 @@
         } // end else (!bpCrateUI)
 
       } else if (menuMode === "waiting") {
-        const host = isLobbyHost();
+        const host = isPrivateLobbyHost();
         const roster = lobbyRoster.length ? lobbyRoster : [{ id: myId, name: pilotDisplayName() }];
         if (host) {
           for (let i = 0; i < Math.min(roster.length, 6); i++) {
@@ -3511,10 +3511,10 @@
         vctx.fillText("Same account as Paradox · username + password (no email needed)", cx, actY + 55);
 
       } else if (menuMode === "waiting") {
-        const host = isLobbyHost();
+        const host = isPrivateLobbyHost();
         drawCard(vctx, cx - 230, 80, 460, 440, CYAN);
         vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
-        vctx.fillText(host ? "LOBBY — YOU ARE HOST" : "LOBBY — WAITING", cx, 108);
+        vctx.fillText(lobbyIsPublic ? "QUICK PLAY LOBBY" : (host ? "LOBBY — YOU ARE HOST" : "LOBBY — WAITING"), cx, 108);
         vctx.font = "14px Consolas"; vctx.fillStyle = RAINBOW[3];
         vctx.fillText("ROOM " + (roomCode || "????"), cx, 132);
         vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
@@ -3561,6 +3561,13 @@
           drawCard(vctx, cx - 100, 455, 200, 40, CYAN);
           vctx.font = "bold 14px Consolas"; vctx.fillStyle = CYAN;
           vctx.fillText("START MATCH", cx, 480);
+        } else if (lobbyIsPublic) {
+          vctx.font = "13px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
+          vctx.fillText("Match starts automatically when 2+ pilots join", cx, 400);
+          vctx.font = "12px Consolas"; vctx.fillStyle = GRAY;
+          vctx.fillText("No host controls in Quick Play · use Private for CPUs", cx, 430);
+          const pulse = Math.floor((performance.now() / 50) % 10);
+          vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 470, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
         } else {
           vctx.font = "12px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
           vctx.fillText("Waiting for host to start the match…", cx, 430);
@@ -4486,11 +4493,16 @@
               }
             }
           } else if (myShip && myShip.alive && myShip.hp > 0) {
-            // Enemy shot — destroy on contact with our ship (damage arrives via network)
+            // Enemy / CPU shot on local ship
             const pDSq = (l.x - myShip.world_x) * (l.x - myShip.world_x) + (l.y - myShip.world_y) * (l.y - myShip.world_y);
             if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
               lasers.splice(i, 1);
               hitPlayer = true;
+              const oid = Number(l.owner);
+              // CPU shots are host-local — apply damage here (humans still use network hits)
+              if (cpuShips[oid] || (remoteShips[oid] && remoteShips[oid].is_cpu)) {
+                takeDamage(l.dmg || 1);
+              }
             }
           }
           // Also block when a foreign laser visually hits another remote ship
@@ -4503,6 +4515,10 @@
               if (pDSq < (hitRad + targetRad) * (hitRad + targetRad)) {
                 lasers.splice(i, 1);
                 hitPlayer = true;
+                const oid = Number(l.owner);
+                if (isHost() && (cpuShips[oid] || (remoteShips[oid] && remoteShips[oid].is_cpu))) {
+                  applyDamageToRemote(p.id, l.dmg || 1, 0, false);
+                }
                 break;
               }
             }
