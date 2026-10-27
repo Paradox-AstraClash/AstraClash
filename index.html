@@ -306,9 +306,9 @@
 
     // --- Lightweight Web Audio SFX (no external files) ---
     let audioCtx = null;
-    let sfxMuted = false;
+    // sfxMuted / sfxVolume declared with rejoin state below
     function ensureAudio() {
-      if (sfxMuted) return null;
+      if (typeof sfxMuted !== "undefined" && sfxMuted) return null;
       try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === "suspended") audioCtx.resume();
@@ -323,7 +323,8 @@
       o.type = type || "square";
       o.frequency.setValueAtTime(freq, t0);
       if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
-      g.gain.setValueAtTime(vol || 0.06, t0);
+      const base = (vol || 0.06) * (typeof sfxVolume === "number" ? sfxVolume : 0.7);
+      g.gain.setValueAtTime(Math.max(0.0001, base), t0);
       g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
       o.connect(g); g.connect(ctx.destination);
       o.start(t0); o.stop(t0 + dur + 0.02);
@@ -391,6 +392,10 @@
     // --- Rejoin last room ---
     let lastRoomCode = sessionStorage.getItem("astraclash_last_room") || "";
     let lastRoomPass = sessionStorage.getItem("astraclash_last_pass") || "";
+    let rejoinPopupOpen = Boolean(lastRoomCode) && sessionStorage.getItem("astraclash_rejoin_dismissed") !== lastRoomCode;
+    let sfxMuted = sessionStorage.getItem("astraclash_sfx_muted") === "1";
+    let sfxVolume = Number(sessionStorage.getItem("astraclash_sfx_vol") || "0.7");
+    if (!Number.isFinite(sfxVolume)) sfxVolume = 0.7;
 
     const stars = [];
     for (let i = 0; i < 40; i++) { stars.push({ x: Math.random() * V_WIDTH * 2, y: Math.random() * V_HEIGHT * 2, z: 0.1 + Math.random() * 0.5 }); }
@@ -504,15 +509,60 @@
       { id: "bp_afterburn", name: "BP: AFTERBURNERS", desc: "Start with Afterburners", cost: 2200, node: "afterburners" },
       { id: "bp_gatling", name: "BP: GATLING", desc: "Start with Gatling Laser", cost: 2500, node: "rapid_fire" }
     ];
-    const CONTRACT_POOL = [
-      { id: "kills_3", desc: "Score 3 kills", stat: "kills", target: 3, reward: 120 },
-      { id: "kills_5", desc: "Score 5 kills", stat: "kills", target: 5, reward: 200 },
-      { id: "ore_20", desc: "Mine 20 ore", stat: "ore", target: 20, reward: 100 },
-      { id: "ore_40", desc: "Mine 40 ore", stat: "ore", target: 40, reward: 180 },
-      { id: "dmg_30", desc: "Deal 30 damage", stat: "damage", target: 30, reward: 140 },
-      { id: "survive_180", desc: "Survive 3 minutes", stat: "time", target: 180, reward: 150 },
-      { id: "win_1", desc: "Win a match", stat: "wins", target: 1, reward: 250 }
+    const DAILY_POOL = [
+      { id: "d_kills_3", desc: "Score 3 kills", stat: "kills", target: 3, reward: 120 },
+      { id: "d_kills_5", desc: "Score 5 kills", stat: "kills", target: 5, reward: 180 },
+      { id: "d_kills_8", desc: "Score 8 kills", stat: "kills", target: 8, reward: 260 },
+      { id: "d_kills_12", desc: "Score 12 kills", stat: "kills", target: 12, reward: 350 },
+      { id: "d_ore_15", desc: "Mine 15 ore", stat: "ore", target: 15, reward: 90 },
+      { id: "d_ore_25", desc: "Mine 25 ore", stat: "ore", target: 25, reward: 130 },
+      { id: "d_ore_40", desc: "Mine 40 ore", stat: "ore", target: 40, reward: 180 },
+      { id: "d_ore_60", desc: "Mine 60 ore", stat: "ore", target: 60, reward: 250 },
+      { id: "d_dmg_25", desc: "Deal 25 damage", stat: "damage", target: 25, reward: 110 },
+      { id: "d_dmg_50", desc: "Deal 50 damage", stat: "damage", target: 50, reward: 170 },
+      { id: "d_dmg_80", desc: "Deal 80 damage", stat: "damage", target: 80, reward: 240 },
+      { id: "d_time_120", desc: "Stay alive 2 minutes", stat: "time", target: 120, reward: 100 },
+      { id: "d_time_180", desc: "Stay alive 3 minutes", stat: "time", target: 180, reward: 140 },
+      { id: "d_time_300", desc: "Stay alive 5 minutes", stat: "time", target: 300, reward: 200 },
+      { id: "d_time_480", desc: "Stay alive 8 minutes", stat: "time", target: 480, reward: 280 },
+      { id: "d_win_1", desc: "Win a match", stat: "wins", target: 1, reward: 220 },
+      { id: "d_win_2", desc: "Win 2 matches", stat: "wins", target: 2, reward: 380 },
+      { id: "d_matches_2", desc: "Play 2 matches", stat: "matches", target: 2, reward: 100 },
+      { id: "d_matches_3", desc: "Play 3 matches", stat: "matches", target: 3, reward: 150 },
+      { id: "d_matches_5", desc: "Play 5 matches", stat: "matches", target: 5, reward: 240 },
+      { id: "d_gold_3", desc: "Collect 3 gold ore", stat: "gold", target: 3, reward: 160 },
+      { id: "d_gold_5", desc: "Collect 5 gold ore", stat: "gold", target: 5, reward: 240 },
+      { id: "d_ast_10", desc: "Break 10 asteroids", stat: "asteroids", target: 10, reward: 100 },
+      { id: "d_ast_20", desc: "Break 20 asteroids", stat: "asteroids", target: 20, reward: 170 },
+      { id: "d_ast_35", desc: "Break 35 asteroids", stat: "asteroids", target: 35, reward: 250 }
     ];
+    const WEEKLY_POOL = [
+      { id: "w_kills_24", desc: "Score 24 kills", stat: "kills", target: 24, reward: 900 },
+      { id: "w_kills_40", desc: "Score 40 kills", stat: "kills", target: 40, reward: 1400 },
+      { id: "w_kills_60", desc: "Score 60 kills", stat: "kills", target: 60, reward: 2000 },
+      { id: "w_ore_160", desc: "Mine 160 ore", stat: "ore", target: 160, reward: 900 },
+      { id: "w_ore_250", desc: "Mine 250 ore", stat: "ore", target: 250, reward: 1300 },
+      { id: "w_ore_400", desc: "Mine 400 ore", stat: "ore", target: 400, reward: 1800 },
+      { id: "w_dmg_200", desc: "Deal 200 damage", stat: "damage", target: 200, reward: 900 },
+      { id: "w_dmg_400", desc: "Deal 400 damage", stat: "damage", target: 400, reward: 1500 },
+      { id: "w_time_1800", desc: "Stay alive 30 minutes", stat: "time", target: 1800, reward: 1200 },
+      { id: "w_time_3600", desc: "Stay alive 60 minutes", stat: "time", target: 3600, reward: 2000 },
+      { id: "w_time_5400", desc: "Stay alive 90 minutes", stat: "time", target: 5400, reward: 2800 },
+      { id: "w_win_8", desc: "Win 8 matches", stat: "wins", target: 8, reward: 1500 },
+      { id: "w_win_12", desc: "Win 12 matches", stat: "wins", target: 12, reward: 2200 },
+      { id: "w_matches_15", desc: "Play 15 matches", stat: "matches", target: 15, reward: 800 },
+      { id: "w_matches_25", desc: "Play 25 matches", stat: "matches", target: 25, reward: 1200 },
+      { id: "w_matches_40", desc: "Play 40 matches", stat: "matches", target: 40, reward: 1800 },
+      { id: "w_gold_20", desc: "Collect 20 gold ore", stat: "gold", target: 20, reward: 1000 },
+      { id: "w_gold_40", desc: "Collect 40 gold ore", stat: "gold", target: 40, reward: 1600 },
+      { id: "w_ast_80", desc: "Break 80 asteroids", stat: "asteroids", target: 80, reward: 900 },
+      { id: "w_ast_150", desc: "Break 150 asteroids", stat: "asteroids", target: 150, reward: 1400 },
+      { id: "w_time_match_10", desc: "Survive 10+ min in one match", stat: "long_match", target: 1, reward: 1100 },
+      { id: "w_time_match_15", desc: "Survive 15+ min in one match", stat: "long_match15", target: 1, reward: 1600 }
+    ];
+    const CONTRACT_POOL = DAILY_POOL.concat(WEEKLY_POOL);
+    const DAILY_SLOT_COUNT = 5;
+    const WEEKLY_SLOT_COUNT = 3;
     const SHOP_CONSUMABLES = [
       { id: "plusLevel", name: "+1 LEVEL", desc: "Start next match 1 tier ahead", cost: 1000, maxOwn: 1 },
       { id: "plusLevel2", name: "+2 LEVELS", desc: "Start next match 2 tiers ahead", cost: 2500, maxOwn: 1 },
@@ -536,6 +586,7 @@
         activeTitle: null,
         activeTrail: null,
         activeColor: null,
+        activeBlueprint: null,
         shipColorHex: null,
         colorBpTotal: 0,
         updatedAt: 0
@@ -561,7 +612,7 @@
         d.inv.trailBlueprints = (raw.inv && raw.inv.trailBlueprints && typeof raw.inv.trailBlueprints === "object")
           ? raw.inv.trailBlueprints : {};
         d.inv.colors = Array.isArray(raw.inv && raw.inv.colors) ? raw.inv.colors : [];
-        d.inv.blueprints = Array.isArray(raw.inv && raw.inv.blueprints) ? raw.inv.blueprints.slice(0, 1) : [];
+        d.inv.blueprints = Array.isArray(raw.inv && raw.inv.blueprints) ? raw.inv.blueprints.slice() : [];
         d.inv.colorBlueprints = (raw.inv && raw.inv.colorBlueprints && typeof raw.inv.colorBlueprints === "object")
           ? raw.inv.colorBlueprints : {};
         d.inv.shipStockpile = !!(raw.inv && raw.inv.shipStockpile);
@@ -569,6 +620,10 @@
         d.activeTitle = raw.activeTitle || null;
         d.activeTrail = raw.activeTrail || null;
         d.activeColor = raw.activeColor || null;
+        d.activeBlueprint = raw.activeBlueprint || null;
+        // Equipped BP must be owned
+        if (d.activeBlueprint && !d.inv.blueprints.includes(d.activeBlueprint)) d.activeBlueprint = null;
+        if (!d.activeBlueprint && d.inv.blueprints.length === 1) d.activeBlueprint = d.inv.blueprints[0];
         d.shipColorHex = raw.shipColorHex || null;
         d.colorBpTotal = Number(raw.colorBpTotal) || 0;
         d.updatedAt = Number(raw.updatedAt) || 0;
@@ -866,6 +921,13 @@
       const t = SHOP_TRAILS.find(x => x.id === id);
       return t ? t.color : null;
     }
+        function boardName(name) {
+      if (!name) return "PILOT";
+      // Strip legacy "Name · Title" if an old client still sends it
+      const s = String(name);
+      const cut = s.indexOf(" · ");
+      return cut >= 0 ? s.slice(0, cut) : s;
+    }
     function titleLabel(id) {
       const t = SHOP_TITLES.find(x => x.id === id);
       return t ? t.label : null;
@@ -923,50 +985,116 @@
       const d = new Date();
       return d.getUTCFullYear() + "-" + (d.getUTCMonth()+1) + "-" + d.getUTCDate();
     }
+    function contractWeekKey() {
+      // ISO-like week key (UTC Monday-based)
+      const d = new Date();
+      const utc = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+      const dayNum = utc.getUTCDay() || 7;
+      utc.setUTCDate(utc.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+      const week = Math.ceil((((utc - yearStart) / 86400000) + 1) / 7);
+      return utc.getUTCFullYear() + "-W" + String(week).padStart(2, "0");
+    }
+    function seededShuffle(arr, seedStr) {
+      let seed = 0;
+      for (let i = 0; i < seedStr.length; i++) seed = (seed * 31 + seedStr.charCodeAt(i)) >>> 0;
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        seed = (seed * 1103515245 + 12345) >>> 0;
+        const j = seed % (i + 1);
+        const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+      }
+      return a;
+    }
+    function emptyContractData() {
+      return {
+        day: contractDayKey(),
+        week: contractWeekKey(),
+        daily: [],
+        weekly: [],
+        list: [], // combined for trackContract convenience
+        progress: {},
+        claimed: {}
+      };
+    }
+    function rollSlotIds(pool, count, seedStr) {
+      return seededShuffle(pool, seedStr).slice(0, count).map(c => c.id);
+    }
+    function rollContracts(prev) {
+      const day = contractDayKey();
+      const week = contractWeekKey();
+      const data = emptyContractData();
+      data.day = day;
+      data.week = week;
+      // Daily: always fresh for the day
+      if (prev && prev.day === day && Array.isArray(prev.daily) && prev.daily.length === DAILY_SLOT_COUNT) {
+        data.daily = prev.daily.slice();
+        for (const id of data.daily) {
+          if (prev.progress && prev.progress[id] != null) data.progress[id] = prev.progress[id];
+          if (prev.claimed && prev.claimed[id]) data.claimed[id] = true;
+        }
+      } else {
+        data.daily = rollSlotIds(DAILY_POOL, DAILY_SLOT_COUNT, "daily:" + day);
+      }
+      // Weekly: persist across days within the week
+      if (prev && prev.week === week && Array.isArray(prev.weekly) && prev.weekly.length === WEEKLY_SLOT_COUNT) {
+        data.weekly = prev.weekly.slice();
+        for (const id of data.weekly) {
+          if (prev.progress && prev.progress[id] != null) data.progress[id] = prev.progress[id];
+          if (prev.claimed && prev.claimed[id]) data.claimed[id] = true;
+        }
+      } else {
+        data.weekly = rollSlotIds(WEEKLY_POOL, WEEKLY_SLOT_COUNT, "weekly:" + week);
+      }
+      data.list = data.daily.concat(data.weekly);
+      saveContracts(data);
+      return data;
+    }
     function loadContracts() {
       const key = shopStorageKey();
-      if (!key) return { day: contractDayKey(), list: [], progress: {}, claimed: {} };
+      if (!key) return rollContracts(null);
       try {
         const raw = JSON.parse(localStorage.getItem(key + "_contracts") || "null");
-        if (!raw || raw.day !== contractDayKey()) return rollDailyContracts();
+        if (!raw) return rollContracts(null);
+        // Migrate old format { day, list }
+        if (raw.list && !raw.daily) {
+          return rollContracts(null);
+        }
+        if (raw.day !== contractDayKey() || raw.week !== contractWeekKey()) {
+          return rollContracts(raw);
+        }
+        raw.list = (raw.daily || []).concat(raw.weekly || []);
         return raw;
-      } catch (e) { return rollDailyContracts(); }
+      } catch (e) {
+        return rollContracts(null);
+      }
     }
     function saveContracts(c) {
       const key = shopStorageKey();
       if (!key) return;
       try { localStorage.setItem(key + "_contracts", JSON.stringify(c)); } catch (e) {}
     }
-    function rollDailyContracts() {
-      // deterministic-ish shuffle from day string
-      const day = contractDayKey();
-      let seed = 0;
-      for (let i = 0; i < day.length; i++) seed = (seed * 31 + day.charCodeAt(i)) >>> 0;
-      const pool = CONTRACT_POOL.slice();
-      for (let i = pool.length - 1; i > 0; i--) {
-        seed = (seed * 1103515245 + 12345) >>> 0;
-        const j = seed % (i + 1);
-        const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
-      }
-      const list = pool.slice(0, 3).map(c => c.id);
-      const data = { day, list, progress: {}, claimed: {} };
-      saveContracts(data);
-      return data;
-    }
-    let contractData = { day: "", list: [], progress: {}, claimed: {} };
+    let contractData = emptyContractData();
     function reloadContracts() {
       contractData = loadContracts();
     }
     function trackContract(stat, amount) {
       if (!activePilot) return;
-      if (!contractData || contractData.day !== contractDayKey()) reloadContracts();
-      for (const id of contractData.list) {
+      if (!contractData || contractData.day !== contractDayKey() || contractData.week !== contractWeekKey()) {
+        reloadContracts();
+      }
+      const ids = (contractData.list && contractData.list.length)
+        ? contractData.list
+        : (contractData.daily || []).concat(contractData.weekly || []);
+      let changed = false;
+      for (const id of ids) {
         const def = CONTRACT_POOL.find(c => c.id === id);
         if (!def || def.stat !== stat) continue;
         if (contractData.claimed[id]) continue;
         contractData.progress[id] = (contractData.progress[id] || 0) + amount;
-        saveContracts(contractData);
+        changed = true;
       }
+      if (changed) saveContracts(contractData);
     }
     async function claimContract(id) {
       const def = CONTRACT_POOL.find(c => c.id === id);
@@ -1094,17 +1222,19 @@
       } else {
         shopData._killStreakLeft = 0;
       }
-      // Permanent module blueprints — apply upgrade nodes at match start
-      const bps = (shopData.inv && shopData.inv.blueprints) ? shopData.inv.blueprints : [];
-      for (const bpId of bps) {
-        const bp = SHOP_BLUEPRINTS.find(b => b.id === bpId);
-        if (!bp || !UPGRADE_TREE[bp.node]) continue;
-        const node = UPGRADE_TREE[bp.node];
-        if (node.apply) {
-          try { node.apply(myShip); } catch (e) {}
-          myShip.current_node = bp.node;
-          if ((myShip.tier || 0) < 1) myShip.tier = 1;
-          if ((myShip.xp || 0) < TIER_XP_THRESHOLDS[1]) myShip.xp = TIER_XP_THRESHOLDS[1];
+      // Module blueprint — only the equipped one applies (own many, equip one)
+      const eqBpId = shopData.activeBlueprint;
+      if (eqBpId && shopData.inv && (shopData.inv.blueprints || []).includes(eqBpId)) {
+        const bp = SHOP_BLUEPRINTS.find(b => b.id === eqBpId);
+        if (bp && UPGRADE_TREE[bp.node]) {
+          const node = UPGRADE_TREE[bp.node];
+          if (node.apply) {
+            try { node.apply(myShip); } catch (e) {}
+            myShip.current_node = bp.node;
+            if ((myShip.tier || 0) < 1) myShip.tier = 1;
+            if ((myShip.xp || 0) < TIER_XP_THRESHOLDS[1]) myShip.xp = TIER_XP_THRESHOLDS[1];
+            pushKillFeed(`BP EQUIPPED: ${bp.name.replace("BP: ", "")}`);
+          }
         }
       }
       shopData.inv = inv;
@@ -1275,6 +1405,9 @@
           if (roomCode) {
             lastRoomCode = String(roomCode);
             sessionStorage.setItem("astraclash_last_room", lastRoomCode);
+            // Allow rejoin prompt next time they return to hangar
+            sessionStorage.removeItem("astraclash_rejoin_dismissed");
+            rejoinPopupOpen = true;
           }
         }
 
@@ -1402,7 +1535,8 @@
                 is_charging_shield: Boolean(s.is_charging_shield),
                 shield_charge: Number.isFinite(Number(s.shield_charge)) ? Number(s.shield_charge) : 0,
                 color: s.color || RAINBOW[Number(sId)] || RAINBOW[2],
-                name: s.name || `PILOT ${sId}`
+                name: boardName(s.name || `PILOT ${sId}`),
+                title: s.title || null
               };
             }
           }
@@ -1673,11 +1807,11 @@
         }
         return Object.values(teams).sort((a, b) => b.kills - a.kills);
       }
-      const list = [{ name: (myShip && myShip.name) || "YOU", kills: (myShip && myShip.kills) || 0, id: myId }];
+      const list = [{ name: boardName((myShip && myShip.name) || "YOU"), kills: (myShip && myShip.kills) || 0, id: myId }];
       for (const pid in remoteShips) {
         const p = remoteShips[pid];
         if (!p) continue;
-        list.push({ name: p.name || `PILOT ${pid}`, kills: p.kills || 0, id: Number(pid) });
+        list.push({ name: boardName(p.name || `PILOT ${pid}`), kills: p.kills || 0, id: Number(pid) });
       }
       list.sort((a, b) => b.kills - a.kills || a.name.localeCompare(b.name));
       return list;
@@ -1717,7 +1851,11 @@
         if (isTeamMode() && matchResults[0] && matchResults[0].members) {
           won = matchResults[0].members.some(m => Number(m.id) === Number(myId));
         }
+        trackContract("matches", 1);
         if (won) trackContract("wins", 1);
+        const aliveSec = Math.floor(matchStats.timeAlive || 0);
+        if (aliveSec >= 600) trackContract("long_match", 1);
+        if (aliveSec >= 900) trackContract("long_match15", 1);
         // Earned color blueprint drop for winning (must have been in the match 60s+)
         if (won && (matchStats.timeAlive || 0) >= 60) {
           const bpMsg = tryEarnColorBlueprint(COLOR_BP_DROP_WIN);
@@ -1777,6 +1915,9 @@
       connectionError = false;
       statusMessage = "Returning to hangar...";
       statusColor = CYAN;
+      if (lastRoomCode && sessionStorage.getItem("astraclash_rejoin_dismissed") !== lastRoomCode) {
+        rejoinPopupOpen = true;
+      }
       connectWs();
       updateTouchUIVisibility();
     }
@@ -1899,7 +2040,8 @@
       reloadShopForPilot();
       const baseName = activePilot ? (activePilot.display_name || activePilot.username) : `PILOT ${safeId}`;
       const tLabel = (shopData && shopData.activeTitle) ? titleLabel(shopData.activeTitle) : null;
-      const pilotName = tLabel ? `${baseName} · ${tLabel}` : baseName;
+      // Name stays short for leaderboard / packets; title only drawn above the ship
+      const pilotName = baseName;
 
       myShip = {
         id: safeId, 
@@ -1938,6 +2080,7 @@
         ram_power: 1.0, 
         cooldown: 0.0, 
         name: pilotName,
+        title: tLabel || null,
         heal_on_ore: false, 
         ore_counter: 0, 
         life_leech: false, 
@@ -2184,33 +2327,76 @@
           })();
         }
       } else if (menuMode === "main") {
-        if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 175 && pos.y <= 219) {
-          if (!isConnected) connectWs();
-          applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
-          sendMsg({ action: "list_public" }); 
-          statusMessage = "Searching active public games..."; 
-          statusColor = RAINBOW[3];
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 230 && pos.y <= 274) {
+        // Rejoin popup (match-complete style) takes priority
+        if (rejoinPopupOpen && lastRoomCode) {
+          if (hitRect(pos, rejoinCloseRect(), 6)) {
+            dismissRejoinPopup();
+          } else if (pos.x >= cx - 120 && pos.x <= cx - 10 && pos.y >= 320 && pos.y <= 358) {
+            doRejoinLastRoom();
+          } else if (pos.x >= cx + 10 && pos.x <= cx + 120 && pos.y >= 320 && pos.y <= 358) {
+            dismissRejoinPopup();
+          }
+        } else {
+          // Settings gear (top-left under banner area)
+          if (pos.x >= 18 && pos.x <= 58 && pos.y >= 18 && pos.y <= 58) {
+            menuMode = "settings";
+          }
+          // Account banner → soft refresh / stays on main (tap could open account later)
+          else if (pos.x >= 70 && pos.x <= 320 && pos.y >= 16 && pos.y <= 72) {
+            refreshCoins();
+            reloadShopForPilot();
+            statusMessage = "Pilot profile refreshed.";
+            statusColor = CYAN;
+          }
+          // Quick Play
+          else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 220 && pos.y <= 278) {
+            if (!isConnected) connectWs();
+            applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
+            sendMsg({ action: "list_public" });
+            statusMessage = "Searching active public games...";
+            statusColor = RAINBOW[3];
+          }
+          // Private Matches hub
+          else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 295 && pos.y <= 353) {
+            menuMode = "private";
+          }
+          // Shop
+          else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 370 && pos.y <= 428) {
+            reloadShopForPilot();
+            refreshCoins();
+            shopTab = "boosts";
+            shopMessage = "";
+            menuMode = "shop";
+          }
+        }
+      } else if (menuMode === "private") {
+        if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 220 && pos.y <= 278) {
           menuMode = "host_private"; passwordInput = ""; activeInput = "pass";
           openMobileKeyboard("roomPass");
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 285 && pos.y <= 329) {
+        } else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 295 && pos.y <= 353) {
           menuMode = "join_private"; roomCodeInput = ""; passwordInput = ""; activeInput = "code";
           openMobileKeyboard("roomCode");
-        } else if (pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 340 && pos.y <= 384) {
-          reloadShopForPilot();
-          refreshCoins();
-          shopTab = "boosts";
-          shopMessage = "";
-          menuMode = "shop";
-        } else if (lastRoomCode && pos.x >= cx - 150 && pos.x <= cx + 150 && pos.y >= 395 && pos.y <= 439) {
-          if (!isConnected) connectWs();
-          roomCodeInput = lastRoomCode;
-          passwordInput = lastRoomPass || "";
-          pendingJoin = true;
-          sendMsg({ action: "join_room", room_code: lastRoomCode, password: lastRoomPass || null });
-          statusMessage = `Rejoining ${lastRoomCode}...`;
-          statusColor = RAINBOW[3];
-        } else if (pos.x >= cx - 60 && pos.x <= cx + 60 && pos.y >= 450 && pos.y <= 480) {
+        } else if (lastRoomCode && pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 370 && pos.y <= 428) {
+          doRejoinLastRoom();
+        } else if (pos.x >= cx - 80 && pos.x <= cx + 80 && pos.y >= 500 && pos.y <= 536) {
+          menuMode = "main";
+        }
+      } else if (menuMode === "settings") {
+        if (pos.x >= cx - 80 && pos.x <= cx + 80 && pos.y >= 420 && pos.y <= 456) {
+          menuMode = "main";
+        } else if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 220 && pos.y <= 260) {
+          sfxMuted = !sfxMuted;
+          sessionStorage.setItem("astraclash_sfx_muted", sfxMuted ? "1" : "0");
+        } else if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 280 && pos.y <= 320) {
+          // cycle volume 0.3 -> 0.7 -> 1.0
+          if (sfxVolume < 0.5) sfxVolume = 0.7;
+          else if (sfxVolume < 0.85) sfxVolume = 1.0;
+          else sfxVolume = 0.3;
+          sessionStorage.setItem("astraclash_sfx_vol", String(sfxVolume));
+          sfxMuted = false;
+          sessionStorage.setItem("astraclash_sfx_muted", "0");
+        } else if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 340 && pos.y <= 380) {
+          // logout
           sessionStorage.removeItem("astraclash_current_user");
           activePilot = null;
           authNameInput = "";
@@ -2387,6 +2573,7 @@
                 const id = rollRandomTitle();
                 if (!shopData.inv.titles.includes(id)) shopData.inv.titles.push(id);
                 shopData.activeTitle = id; saveShop(shopData);
+                if (myShip) myShip.title = titleLabel(id);
                 shopMessage = `ROLLED: ${titleLabel(id)}`;
                 shopBusy = false; refreshCoins();
               })();
@@ -2398,7 +2585,7 @@
             const rowY = 250 + i * 38;
             if (pos.x >= cx - 180 && pos.x <= cx + 180 && pos.y >= rowY && pos.y <= rowY + 34) {
               if (shopData.inv.titles.includes(t.id)) {
-                shopData.activeTitle = t.id; saveShop(shopData); shopMessage = `TITLE: ${t.label}`;
+                shopData.activeTitle = t.id; saveShop(shopData); if (myShip) myShip.title = t.label; shopMessage = `TITLE: ${t.label}`;
               } else if (getCoins() < 2500) shopMessage = "NEED 2500 TO PICK";
               else {
                 shopBusy = true;
@@ -2407,6 +2594,7 @@
                   if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
                   if (!shopData.inv.titles.includes(t.id)) shopData.inv.titles.push(t.id);
                   shopData.activeTitle = t.id; saveShop(shopData);
+                  if (myShip) myShip.title = t.label;
                   shopMessage = `UNLOCKED: ${t.label}`;
                   shopBusy = false; refreshCoins();
                 })();
@@ -2453,36 +2641,48 @@
           }
         } else if (shopTab === "contracts") {
           reloadContracts();
-          for (let i = 0; i < contractData.list.length; i++) {
-            const id = contractData.list[i];
-            const def = CONTRACT_POOL.find(c => c.id === id);
-            if (!def) continue;
-            // render: rowY = 200 + i*70; claim btn (cx+100, rowY+14, 100, 32)
-            const rowY = 200 + i * 70;
-            if (pos.x >= cx + 100 && pos.x <= cx + 200 && pos.y >= rowY + 14 && pos.y <= rowY + 46) {
+          // Must match render layout (rowY starts 190, daily h=44+4, weekly after header)
+          let rowY = 190;
+          for (const id of (contractData.daily || [])) {
+            if (pos.x >= cx + 105 && pos.x <= cx + 195 && pos.y >= rowY + 8 && pos.y <= rowY + 36) {
               claimContract(id);
             }
+            rowY += 48;
+          }
+          rowY += 4 + 16; // weekly header gap
+          for (const id of (contractData.weekly || [])) {
+            if (pos.x >= cx + 105 && pos.x <= cx + 195 && pos.y >= rowY + 8 && pos.y <= rowY + 36) {
+              claimContract(id);
+            }
+            rowY += 52;
           }
         } else if (shopTab === "blueprints") {
           for (let i = 0; i < SHOP_BLUEPRINTS.length; i++) {
             const bp = SHOP_BLUEPRINTS[i];
-            // render: rowY = 200 + i*48; buy btn (cx+100, rowY+6, 100, 30)
             const rowY = 200 + i * 48;
-            if (pos.x >= cx + 100 && pos.x <= cx + 200 && pos.y >= rowY + 6 && pos.y <= rowY + 36) {
-              const ownedList = shopData.inv.blueprints || [];
-              const own = ownedList.includes(bp.id);
-              if (own) { shopMessage = "ALREADY OWNED"; }
-              else if (ownedList.length >= 1) { shopMessage = "MAX 1 BLUEPRINT — SELL/REPLACE NOT AVAILABLE"; }
-              else if (getCoins() < bp.cost) { shopMessage = "NOT ENOUGH COINS"; }
+            // Full row click: equip if owned, else buy button area
+            const ownedList = shopData.inv.blueprints || [];
+            const own = ownedList.includes(bp.id);
+            const eq = shopData.activeBlueprint === bp.id;
+            // Equip: click left/main card area when owned
+            if (own && pos.x >= cx - 220 && pos.x <= cx + 95 && pos.y >= rowY && pos.y <= rowY + 42) {
+              shopData.activeBlueprint = eq ? null : bp.id;
+              saveShop(shopData);
+              shopMessage = shopData.activeBlueprint ? `EQUIPPED ${bp.name}` : `UNEQUIPPED ${bp.name}`;
+            }
+            // Buy: right button
+            if (!own && pos.x >= cx + 100 && pos.x <= cx + 200 && pos.y >= rowY + 6 && pos.y <= rowY + 36) {
+              if (getCoins() < bp.cost) { shopMessage = "NOT ENOUGH COINS"; }
               else {
                 shopBusy = true;
                 (async () => {
                   const { error } = await addCoinsDelta(-bp.cost);
                   if (error) { shopMessage = "BUY FAILED"; shopBusy = false; return; }
-                  // Hard cap: only one module blueprint total
-                  shopData.inv.blueprints = [bp.id];
+                  if (!shopData.inv.blueprints.includes(bp.id)) shopData.inv.blueprints.push(bp.id);
+                  // Auto-equip if nothing equipped
+                  if (!shopData.activeBlueprint) shopData.activeBlueprint = bp.id;
                   saveShop(shopData);
-                  shopMessage = `UNLOCKED ${bp.name} (MAX 1)`;
+                  shopMessage = `UNLOCKED ${bp.name}`;
                   shopBusy = false; refreshCoins();
                 })();
               }
@@ -2551,7 +2751,7 @@
           statusMessage = "Creating private arena...";
         } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) { 
           closeMobileKeyboard();
-          menuMode = "main"; 
+          menuMode = "private"; 
         }
       } else if (menuMode === "join_private") {
         if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 245 && pos.y <= 279) {
@@ -2581,6 +2781,33 @@
     function hitResultsClose(pos) {
       const r = resultsCloseRect(); const pad = 6;
       return pos.x >= r.x - pad && pos.x <= r.x + r.w + pad && pos.y >= r.y - pad && pos.y <= r.y + r.h + pad;
+    }
+    function rejoinPopupRect() {
+      return { x: V_WIDTH / 2 - 200, y: 160, w: 400, h: 240 };
+    }
+    function rejoinCloseRect() {
+      const r = rejoinPopupRect();
+      return { x: r.x + r.w - 36, y: r.y + 8, w: 28, h: 28 };
+    }
+    function hitRect(pos, r, pad) {
+      pad = pad || 0;
+      return pos.x >= r.x - pad && pos.x <= r.x + r.w + pad && pos.y >= r.y - pad && pos.y <= r.y + r.h + pad;
+    }
+    function doRejoinLastRoom() {
+      if (!lastRoomCode) return;
+      if (!isConnected) connectWs();
+      roomCodeInput = lastRoomCode;
+      passwordInput = lastRoomPass || "";
+      pendingJoin = true;
+      rejoinPopupOpen = false;
+      sessionStorage.setItem("astraclash_rejoin_dismissed", lastRoomCode);
+      sendMsg({ action: "join_room", room_code: lastRoomCode, password: lastRoomPass || null });
+      statusMessage = `Rejoining ${lastRoomCode}...`;
+      statusColor = RAINBOW[3];
+    }
+    function dismissRejoinPopup() {
+      rejoinPopupOpen = false;
+      if (lastRoomCode) sessionStorage.setItem("astraclash_rejoin_dismissed", lastRoomCode);
     }
     canvas.addEventListener("click", (e) => {
       if (!inLobby && matchOver) {
@@ -3027,46 +3254,118 @@
         vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
         vctx.fillText("Share the room code with friends", cx, 390);
       } else {
-        vctx.font = "bold 36px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center"; vctx.fillText("A S T R A C L A S H", cx, 75);
-        vctx.font = "12px Consolas"; vctx.fillStyle = GRAY; vctx.fillText("6-PLAYER ORBITAL COMBAT & UPGRADE ARENA", cx, 102);
+        // Shared chrome for hangar screens (main / private / settings / shop / host / join)
+        // Title top-center
+        vctx.font = "bold 28px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
+        vctx.fillText("ASTRACLASH", cx, 48);
+        vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+        vctx.fillText(statusMessage || "ORBITAL COMBAT", cx, 68);
 
-        // Profile Card
-        if (activePilot) {
-          drawCard(vctx, cx - 250, 115, 500, 50, "rgba(0, 255, 255, 0.4)");
+        // Settings gear top-left
+        if (menuMode === "main" || menuMode === "private" || menuMode === "settings") {
+          const gearHover = mousePos.x >= 18 && mousePos.x <= 58 && mousePos.y >= 18 && mousePos.y <= 58;
+          drawCard(vctx, 18, 18, 40, 40, gearHover ? CYAN : DARK_GRAY);
+          vctx.font = "20px Consolas"; vctx.fillStyle = gearHover ? CYAN : WHITE; vctx.textAlign = "center";
+          vctx.fillText("⚙", 38, 45);
+        }
+
+        // Account banner top-left (Paradox-style)
+        if (activePilot && (menuMode === "main" || menuMode === "private" || menuMode === "settings")) {
+          drawCard(vctx, 70, 16, 250, 56, "rgba(0, 255, 255, 0.35)");
+          vctx.textAlign = "left";
           vctx.font = "bold 13px Consolas";
           vctx.fillStyle = RAINBOW[4];
-          vctx.textAlign = "left";
-          vctx.fillText(`PILOT: ${activePilot.display_name || activePilot.username}`, cx - 235, 136);
-          vctx.fillStyle = WHITE;
-          vctx.font = "11px Consolas";
+          const dn = activePilot.display_name || activePilot.username || "PILOT";
+          vctx.fillText(dn.slice(0, 18), 82, 36);
           const ttl = (shopData && shopData.activeTitle) ? titleLabel(shopData.activeTitle) : null;
-          vctx.fillText(`COINS: ${getCoins()}   XP: ${activePilot.career_xp || 0}   MAX TIER: ${activePilot.highest_tier || 0}`, cx - 235, 154);
-          if (ttl) {
-            vctx.fillStyle = RAINBOW[3];
-            vctx.font = "10px Consolas";
-            vctx.fillText(ttl, cx - 235, 168);
-          }
-          if (shopData && shopData.inv && shopData.inv.shipStockpile) {
-            vctx.fillStyle = ORE_GOLD;
-            vctx.font = "9px Consolas";
-            vctx.fillText("SHIP STOCKPILE", cx + 80, 154);
-          }
+          vctx.font = "10px Consolas";
+          vctx.fillStyle = ttl ? RAINBOW[3] : GRAY;
+          vctx.fillText(ttl ? ttl.slice(0, 22) : (activePilot.username || ""), 82, 52);
+          vctx.font = "bold 12px Consolas";
+          vctx.fillStyle = ORE_GOLD;
+          vctx.textAlign = "right";
+          vctx.fillText(`${getCoins()}c`, 308, 42);
         }
 
         if (menuMode === "main") {
-          const buttons = [
-            { text: "QUICK PLAY (PUBLIC)", y: 175, col: CYAN },
-            { text: "HOST PRIVATE ROOM", y: 230, col: WHITE },
-            { text: "JOIN PRIVATE ROOM", y: 285, col: WHITE },
-            { text: "SHOP", y: 340, col: ORE_GOLD, shop: true }
+          const mainBtns = [
+            { text: "QUICK PLAY", sub: "Public FFA · jump in", y: 220, col: CYAN },
+            { text: "PRIVATE MATCHES", sub: "Host · Join · Rejoin", y: 295, col: WHITE },
+            { text: "SHOP", sub: "Boosts · Cosmetics · Jobs", y: 370, col: ORE_GOLD }
           ];
-          if (lastRoomCode) buttons.push({ text: `REJOIN ${lastRoomCode}`, y: 395, col: RAINBOW[3], rejoin: true });
-          for (const b of buttons) {
-            const hovered = mousePos.x >= cx - 150 && mousePos.x <= cx + 150 && mousePos.y >= b.y && mousePos.y <= b.y + 44;
-            drawCard(vctx, cx - 150, b.y, 300, 44, hovered ? CYAN : b.col); vctx.font = "bold 15px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center"; vctx.fillText(b.text, cx, b.y + 28);
+          for (const b of mainBtns) {
+            const hovered = mousePos.x >= cx - 160 && mousePos.x <= cx + 160 && mousePos.y >= b.y && mousePos.y <= b.y + 58;
+            drawCard(vctx, cx - 160, b.y, 320, 58, hovered ? CYAN : b.col);
+            vctx.font = "bold 18px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center";
+            vctx.fillText(b.text, cx, b.y + 28);
+            vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+            vctx.fillText(b.sub, cx, b.y + 46);
           }
-          const logHover = mousePos.x >= cx - 60 && mousePos.x <= cx + 60 && mousePos.y >= 450 && mousePos.y <= 480;
-          drawCard(vctx, cx - 60, 450, 120, 30, logHover ? RAINBOW[1] : GRAY); vctx.font = "12px Consolas"; vctx.fillStyle = logHover ? RAINBOW[1] : WHITE; vctx.textAlign = "center"; vctx.fillText("LOGOUT", cx, 469);
+
+          // Rejoin popup (game-over style)
+          if (rejoinPopupOpen && lastRoomCode) {
+            vctx.fillStyle = "rgba(5, 8, 18, 0.82)";
+            vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+            const pr = rejoinPopupRect();
+            drawCard(vctx, pr.x, pr.y, pr.w, pr.h, CYAN);
+            // X close
+            const cr = rejoinCloseRect();
+            vctx.fillStyle = "rgba(255, 60, 60, 0.25)";
+            vctx.fillRect(cr.x, cr.y, cr.w, cr.h);
+            vctx.strokeStyle = RAINBOW[1];
+            vctx.lineWidth = 2;
+            vctx.strokeRect(cr.x, cr.y, cr.w, cr.h);
+            vctx.beginPath();
+            vctx.moveTo(cr.x + 8, cr.y + 8); vctx.lineTo(cr.x + cr.w - 8, cr.y + cr.h - 8);
+            vctx.moveTo(cr.x + cr.w - 8, cr.y + 8); vctx.lineTo(cr.x + 8, cr.y + cr.h - 8);
+            vctx.stroke();
+            vctx.textAlign = "center";
+            vctx.font = "bold 22px Consolas"; vctx.fillStyle = CYAN;
+            vctx.fillText("REJOIN MATCH?", cx, pr.y + 55);
+            vctx.font = "14px Consolas"; vctx.fillStyle = WHITE;
+            vctx.fillText(`Room ${lastRoomCode} is still available`, cx, pr.y + 95);
+            vctx.font = "12px Consolas"; vctx.fillStyle = GRAY;
+            vctx.fillText("Continue where you left off, or dismiss.", cx, pr.y + 120);
+            drawCard(vctx, cx - 120, 320, 110, 38, RAINBOW[4]);
+            vctx.font = "bold 14px Consolas"; vctx.fillStyle = RAINBOW[4];
+            vctx.fillText("REJOIN", cx - 65, 344);
+            drawCard(vctx, cx + 10, 320, 110, 38, GRAY);
+            vctx.fillStyle = WHITE;
+            vctx.fillText("DISMISS", cx + 65, 344);
+          }
+
+        } else if (menuMode === "private") {
+          vctx.font = "bold 18px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center";
+          vctx.fillText("PRIVATE MATCHES", cx, 160);
+          const pBtns = [
+            { text: "HOST ROOM", y: 220, col: CYAN },
+            { text: "JOIN ROOM", y: 295, col: WHITE },
+          ];
+          if (lastRoomCode) pBtns.push({ text: `REJOIN ${lastRoomCode}`, y: 370, col: RAINBOW[3] });
+          for (const b of pBtns) {
+            const hovered = mousePos.x >= cx - 160 && mousePos.x <= cx + 160 && mousePos.y >= b.y && mousePos.y <= b.y + 58;
+            drawCard(vctx, cx - 160, b.y, 320, 58, hovered ? CYAN : b.col);
+            vctx.font = "bold 16px Consolas"; vctx.fillStyle = hovered ? CYAN : b.col; vctx.textAlign = "center";
+            vctx.fillText(b.text, cx, b.y + 34);
+          }
+          drawCard(vctx, cx - 80, 500, 160, 36, WHITE);
+          vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
+          vctx.fillText("BACK", cx, 523);
+
+        } else if (menuMode === "settings") {
+          drawCard(vctx, cx - 200, 140, 400, 300, CYAN);
+          vctx.font = "bold 20px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
+          vctx.fillText("SETTINGS", cx, 175);
+          drawCard(vctx, cx - 140, 220, 280, 40, sfxMuted ? RAINBOW[1] : DARK_GRAY);
+          vctx.font = "14px Consolas"; vctx.fillStyle = WHITE;
+          vctx.fillText(sfxMuted ? "SFX: MUTED" : "SFX: ON", cx, 245);
+          drawCard(vctx, cx - 140, 280, 280, 40, DARK_GRAY);
+          vctx.fillText(`VOLUME: ${Math.round(sfxVolume * 100)}%`, cx, 305);
+          drawCard(vctx, cx - 140, 340, 280, 40, RAINBOW[1]);
+          vctx.fillText("LOG OUT", cx, 365);
+          drawCard(vctx, cx - 80, 420, 160, 36, WHITE);
+          vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
+          vctx.fillText("BACK", cx, 443);
 
         } else if (menuMode === "shop") {
           drawCard(vctx, cx - 240, 90, 480, 450, ORE_GOLD);
@@ -3225,43 +3524,54 @@
               );
             }
           } else if (shopTab === "contracts") {
-            if (!contractData.list || contractData.day !== contractDayKey()) reloadContracts();
-            vctx.font = "11px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
-            vctx.fillText("Daily contracts · reset UTC midnight", cx, 185);
-            for (let i = 0; i < contractData.list.length; i++) {
-              const id = contractData.list[i];
+            if (!contractData.daily || contractData.day !== contractDayKey() || contractData.week !== contractWeekKey()) reloadContracts();
+            vctx.font = "11px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
+            vctx.fillText("DAILY · 5 quests · reset UTC midnight", cx, 182);
+            let rowY = 190;
+            const drawQuestRow = (id, compact) => {
               const def = CONTRACT_POOL.find(c => c.id === id);
-              if (!def) continue;
+              if (!def) return;
               const prog = contractData.progress[id] || 0;
               const done = prog >= def.target;
               const claimed = !!contractData.claimed[id];
-              const rowY = 200 + i * 70;
-              drawCard(vctx, cx - 220, rowY, 440, 60, done && !claimed ? RAINBOW[4] : DARK_GRAY);
-              vctx.font = "13px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
-              vctx.fillText(def.desc, cx - 200, rowY + 22);
-              vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
-              vctx.fillText(`${Math.min(prog, def.target)} / ${def.target} · Reward ${def.reward}c`, cx - 200, rowY + 42);
-              drawCard(vctx, cx + 100, rowY + 14, 100, 32, claimed ? DARK_GRAY : (done ? ORE_GOLD : DARK_GRAY));
+              const h = compact ? 44 : 48;
+              drawCard(vctx, cx - 220, rowY, 440, h, done && !claimed ? RAINBOW[4] : DARK_GRAY);
+              vctx.font = "12px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+              vctx.fillText(def.desc, cx - 205, rowY + 16);
+              vctx.font = "10px Consolas"; vctx.fillStyle = GRAY;
+              const isTime = def.stat === "time";
+              let progLabel = isTime
+                ? `${Math.floor(Math.min(prog, def.target) / 60)}m / ${Math.floor(def.target / 60)}m`
+                : `${Math.min(Math.floor(prog), def.target)} / ${def.target}`;
+              vctx.fillText(`${progLabel} · ${def.reward}c`, cx - 205, rowY + 32);
+              drawCard(vctx, cx + 105, rowY + 8, 90, 28, claimed ? DARK_GRAY : (done ? ORE_GOLD : DARK_GRAY));
               vctx.font = "11px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center";
-              vctx.fillText(claimed ? "CLAIMED" : (done ? "CLAIM" : "OPEN"), cx + 150, rowY + 35);
-            }
+              vctx.fillText(claimed ? "CLAIMED" : (done ? "CLAIM" : "…"), cx + 150, rowY + 27);
+              rowY += h + 4;
+            };
+            for (const id of (contractData.daily || [])) drawQuestRow(id, true);
+            rowY += 4;
+            vctx.font = "11px Consolas"; vctx.fillStyle = ORE_GOLD; vctx.textAlign = "center";
+            vctx.fillText("WEEKLY · 3 quests · 8× harder · reset Monday UTC", cx, rowY + 8);
+            rowY += 16;
+            for (const id of (contractData.weekly || [])) drawQuestRow(id, false);
           } else if (shopTab === "blueprints") {
             vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
-            vctx.fillText("Max 1 module BP · applied every match start", cx, 185);
+            vctx.fillText("Own many · equip one (tap owned to equip) · applies at match start", cx, 185);
             for (let i = 0; i < SHOP_BLUEPRINTS.length; i++) {
               const bp = SHOP_BLUEPRINTS[i];
               const rowY = 200 + i * 48;
               const own = shopData.inv.blueprints.includes(bp.id);
-              drawCard(vctx, cx - 220, rowY, 440, 42, own ? RAINBOW[4] : DARK_GRAY);
+              const eq = shopData.activeBlueprint === bp.id;
+              drawCard(vctx, cx - 220, rowY, 440, 42, eq ? RAINBOW[4] : (own ? CYAN : DARK_GRAY));
               vctx.font = "13px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
-              vctx.fillText(bp.name, cx - 200, rowY + 18);
+              vctx.fillText((eq ? "★ " : "") + bp.name, cx - 200, rowY + 18);
               vctx.font = "10px Consolas"; vctx.fillStyle = GRAY;
               vctx.fillText(bp.desc, cx - 200, rowY + 34);
               vctx.textAlign = "center";
-              const hasAny = (shopData.inv.blueprints || []).length >= 1;
-              drawCard(vctx, cx + 100, rowY + 6, 100, 30, own ? RAINBOW[4] : (hasAny ? DARK_GRAY : ORE_GOLD));
+              drawCard(vctx, cx + 100, rowY + 6, 100, 30, eq ? RAINBOW[4] : (own ? CYAN : ORE_GOLD));
               vctx.font = "11px Consolas"; vctx.fillStyle = WHITE;
-              vctx.fillText(own ? "OWNED" : (hasAny ? "MAX 1" : `${bp.cost}c`), cx + 150, rowY + 26);
+              vctx.fillText(eq ? "EQUIPPED" : (own ? "EQUIP" : `${bp.cost}c`), cx + 150, rowY + 26);
             }
 
           }
@@ -3489,7 +3799,8 @@
                   xp: myShip.xp,
                   kills: myShip.kills || 0,
                   stasis: false,
-                  name: myShip.name,
+                  name: boardName(myShip.name),
+                  title: myShip.title || null,
                   trail: (shopData && shopData.activeTrail) ? shopData.activeTrail : null
                 },
                 match_config: matchConfig,
@@ -3782,7 +4093,7 @@
                 a.hp -= dmg;
                 if (a.hp <= 0) {
                   spawnParticles(a.x, a.y, a.is_bomb ? 'rgb(255, 50, 50)' : ASTEROID_COLOR, 15);
-                  recordAccountStat("asteroids", 1);
+                  recordAccountStat("asteroids", 1); trackContract("asteroids", 1);
                   if (a.is_bomb) {
                     screenShake = 15;
                     for (const pid in remoteShips) {
@@ -3802,7 +4113,7 @@
               recentAsteroidHp.set(Number(a.id), { hp: a.hp, t: performance.now() });
               if (ownerIsMe) {
                 outgoingAsteroidHits.push({ id: a.id, dmg: dmg });
-                if (a.hp <= 0) recordAccountStat("asteroids", 1);
+                if (a.hp <= 0) recordAccountStat("asteroids", 1); trackContract("asteroids", 1);
               }
               if (a.hp < 0) a.hp = 0;
             }
@@ -3983,7 +4294,8 @@
               is_charging_shield: Boolean(myShip.is_charging_shield),
               shield_charge: Number((myShip.shield_charge || 0).toFixed(2)),
               color: myShip.color,
-              name: myShip.name,
+              name: boardName(myShip.name),
+              title: myShip.title || ((shopData && shopData.activeTitle) ? titleLabel(shopData.activeTitle) : null),
               trail: (shopData && shopData.activeTrail) ? shopData.activeTrail : null
             } 
           };
@@ -4193,9 +4505,15 @@
             vctx.fill();
             vctx.stroke();
           }
+          vctx.textAlign = "center";
+          if (p.title) {
+            vctx.font = "bold 9px Consolas";
+            vctx.fillStyle = RAINBOW[3];
+            vctx.fillText(p.title, ox, oy - 50);
+          }
           vctx.font = "bold 10px Consolas";
           vctx.fillStyle = isTeamMode() ? (TEAM_COLORS[getTeam(p.id)] || WHITE) : WHITE;
-          vctx.textAlign = "center"; vctx.fillText(p.name, ox, oy - 38);
+          vctx.fillText(boardName(p.name), ox, oy - 38);
           vctx.fillStyle = "rgb(255, 50, 50)"; vctx.fillRect(ox - 17, oy - 28, 34, 5); 
           const pct = Math.max(0.0, Math.min(1.0, p.hp / (p.max_hp || 6))); vctx.fillStyle = RAINBOW[4]; vctx.fillRect(ox - 17, oy - 28, Math.floor(34 * pct), 5);
         } else { 
@@ -4225,7 +4543,7 @@
               vctx.font = "bold 9px Consolas";
               vctx.fillStyle = WHITE;
               vctx.textAlign = "center";
-              vctx.fillText(p.name, 0, -14);
+              vctx.fillText(boardName(p.name), 0, -14);
               vctx.restore();
             }
           }
@@ -4279,7 +4597,14 @@
         vctx.fillStyle = WHITE; vctx.textAlign = "center"; vctx.font = "bold 14px Consolas"; vctx.fillText("STASIS", cx, cy - 40);
       }
 
-      vctx.font = "bold 10px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center"; vctx.fillText(myShip.name, cx, cy - 38);
+      vctx.textAlign = "center";
+      if (myShip.title) {
+        vctx.font = "bold 9px Consolas";
+        vctx.fillStyle = RAINBOW[3];
+        vctx.fillText(myShip.title, cx, cy - 50);
+      }
+      vctx.font = "bold 10px Consolas"; vctx.fillStyle = WHITE;
+      vctx.fillText(boardName(myShip.name), cx, cy - 38);
       vctx.fillStyle = "rgb(255, 50, 50)"; vctx.fillRect(cx - 17, cy - 28, 34, 5); 
       const hpPct = Math.max(0.0, Math.min(1.0, myShip.hp / myShip.max_hp)); 
       vctx.fillStyle = RAINBOW[4]; vctx.fillRect(cx - 17, cy - 28, Math.floor(34 * hpPct), 5);
@@ -4291,7 +4616,7 @@
 
       {
         const board = isTeamMode() ? getMatchStandings() : (
-          [{ name: myShip.name, kills: myShip.kills || 0 }].concat(Object.values(remoteShips).map(p => ({ name: p.name, kills: p.kills || 0 }))).sort((a, b) => b.kills - a.kills)
+          [{ name: boardName(myShip.name), kills: myShip.kills || 0 }].concat(Object.values(remoteShips).map(p => ({ name: boardName(p.name), kills: p.kills || 0 }))).sort((a, b) => b.kills - a.kills)
         );
         vctx.fillStyle = "rgba(10, 10, 20, 0.7)";
         vctx.fillRect(V_WIDTH - 170, 80, 160, 25 + board.length * 20);
