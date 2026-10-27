@@ -611,10 +611,17 @@
         d.inv.trails = Array.isArray(raw.inv && raw.inv.trails) ? raw.inv.trails : [];
         d.inv.trailBlueprints = (raw.inv && raw.inv.trailBlueprints && typeof raw.inv.trailBlueprints === "object")
           ? raw.inv.trailBlueprints : {};
+        for (const k of Object.keys(d.inv.trailBlueprints)) {
+          d.inv.trailBlueprints[k] = Math.min(SHOP_TRAIL_BP_NEEDED, Math.max(0, Number(d.inv.trailBlueprints[k]) || 0));
+        }
         d.inv.colors = Array.isArray(raw.inv && raw.inv.colors) ? raw.inv.colors : [];
         d.inv.blueprints = Array.isArray(raw.inv && raw.inv.blueprints) ? raw.inv.blueprints.slice() : [];
         d.inv.colorBlueprints = (raw.inv && raw.inv.colorBlueprints && typeof raw.inv.colorBlueprints === "object")
           ? raw.inv.colorBlueprints : {};
+        // Cap any color BP progress at needed amount (fix prior overflow glitch)
+        for (const k of Object.keys(d.inv.colorBlueprints)) {
+          d.inv.colorBlueprints[k] = Math.min(SHOP_COLOR_BP_NEEDED, Math.max(0, Number(d.inv.colorBlueprints[k]) || 0));
+        }
         d.inv.shipStockpile = !!(raw.inv && raw.inv.shipStockpile);
         d.armed = raw.armed && typeof raw.armed === "object" ? raw.armed : {};
         d.activeTitle = raw.activeTitle || null;
@@ -836,18 +843,27 @@
       if (!shopData.inv.trailBlueprints) shopData.inv.trailBlueprints = {};
       if (!shopData.inv.trails) shopData.inv.trails = [];
       const specials = SHOP_TRAILS.filter(t => t.bp);
+      // Prefer trails not already at max BPs
+      const open = specials.filter(t => (shopData.inv.trailBlueprints[t.id] || 0) < SHOP_TRAIL_BP_NEEDED);
       let trailId = forcedId;
       if (!trailId || !specials.some(t => t.id === trailId)) {
-        // Weighted among BP trails (void rarest)
-        const total = specials.reduce((s, t) => s + (t.drop || 1), 0);
+        const pool = open.length ? open : [];
+        if (pool.length === 0) return { trailId: null, unlocked: false, count: 0, capped: true };
+        const total = pool.reduce((s, t) => s + (t.drop || 1), 0);
         let r = Math.random() * total;
-        trailId = specials[specials.length - 1].id;
-        for (const t of specials) {
+        trailId = pool[pool.length - 1].id;
+        for (const t of pool) {
           r -= (t.drop || 1);
           if (r <= 0) { trailId = t.id; break; }
         }
       }
-      const prev = shopData.inv.trailBlueprints[trailId] || 0;
+      const prev = Math.min(SHOP_TRAIL_BP_NEEDED, shopData.inv.trailBlueprints[trailId] || 0);
+      if (prev >= SHOP_TRAIL_BP_NEEDED) {
+        // Already maxed — unlock if needed, do not go past 5
+        if (!shopData.inv.trails.includes(trailId)) shopData.inv.trails.push(trailId);
+        saveShop(shopData);
+        return { trailId, unlocked: false, count: SHOP_TRAIL_BP_NEEDED, capped: true };
+      }
       const next = prev + 1;
       shopData.inv.trailBlueprints[trailId] = next;
       let unlocked = false;
@@ -856,21 +872,28 @@
         unlocked = true;
       }
       saveShop(shopData);
-      return { trailId, unlocked, count: next };
+      return { trailId, unlocked, count: next, capped: false };
     }
     /** Build weighted pool of any BP type: earnable colors + special trails. */
     function bpCratePool() {
       const pool = [];
       for (const c of SHOP_COLORS) {
-        if (!c.price && c.drop > 0) pool.push({ kind: "color", id: c.id, label: c.label, weight: c.drop, swatch: c.rgb });
+        if (!c.price && c.drop > 0) {
+          const n = (shopData.inv.colorBlueprints && shopData.inv.colorBlueprints[c.id]) || 0;
+          if (n < SHOP_COLOR_BP_NEEDED) pool.push({ kind: "color", id: c.id, label: c.label, weight: c.drop, swatch: c.rgb });
+        }
       }
       for (const t of SHOP_TRAILS) {
-        if (t.bp) pool.push({ kind: "trail", id: t.id, label: t.label + " Trail", weight: t.drop || 1, swatch: t.color });
+        if (t.bp) {
+          const n = (shopData.inv.trailBlueprints && shopData.inv.trailBlueprints[t.id]) || 0;
+          if (n < SHOP_TRAIL_BP_NEEDED) pool.push({ kind: "trail", id: t.id, label: t.label + " Trail", weight: t.drop || 1, swatch: t.color });
+        }
       }
       return pool;
     }
     function rollOneFromBpPool() {
       const pool = bpCratePool();
+      if (!pool.length) return null;
       const total = pool.reduce((s, p) => s + p.weight, 0);
       let r = Math.random() * total;
       for (const p of pool) {
@@ -904,7 +927,11 @@
       bpCrateUI.t0 = performance.now();
       if (bpCrateUI.clicks >= 3) {
         const rewards = [];
-        for (let i = 0; i < 3; i++) rewards.push(grantRolledBp(rollOneFromBpPool()));
+        for (let i = 0; i < 3; i++) {
+          const entry = rollOneFromBpPool();
+          if (!entry) break;
+          rewards.push(grantRolledBp(entry));
+        }
         bpCrateUI.rewards = rewards;
         bpCrateUI.phase = "reveal";
         bpCrateUI.t0 = performance.now();
@@ -952,6 +979,8 @@
       if (!activePilot || !shopStorageKey()) return null;
       if (Math.random() >= chance) return null;
       const g = grantColorBlueprint();
+      if (!g || !g.colorId) return null;
+      if (g.capped && g.count >= SHOP_COLOR_BP_NEEDED) return null;
       const col = SHOP_COLORS.find(c => c.id === g.colorId);
       const name = (col ? col.label : g.colorId).toUpperCase();
       let msg = g.unlockedColor ? `COLOR UNLOCKED: ${name}!` : `COLOR BP: ${name} (${g.count}/${SHOP_COLOR_BP_NEEDED})`;
@@ -963,8 +992,24 @@
       if (!shopData.inv.colorBlueprints) shopData.inv.colorBlueprints = {};
       const earnable = SHOP_COLORS.filter(c => !c.price && c.drop > 0);
       const ids = earnable.map(c => c.id);
-      const colorId = forcedId && ids.includes(forcedId) ? forcedId : rollEarnableColor();
-      const prev = shopData.inv.colorBlueprints[colorId] || 0;
+      // Prefer colors not already at max BP count
+      let colorId = forcedId && ids.includes(forcedId) ? forcedId : null;
+      if (!colorId) {
+        const open = earnable.filter(c => (shopData.inv.colorBlueprints[c.id] || 0) < SHOP_COLOR_BP_NEEDED);
+        if (open.length === 0) {
+          return { colorId: null, unlockedColor: false, stockpile: false, count: SHOP_COLOR_BP_NEEDED, total: shopData.colorBpTotal || 0, capped: true };
+        }
+        const totalW = open.reduce((sum, c) => sum + c.drop, 0);
+        let r = Math.random() * totalW;
+        colorId = open[open.length - 1].id;
+        for (const c of open) { r -= c.drop; if (r <= 0) { colorId = c.id; break; } }
+      }
+      const prev = Math.min(SHOP_COLOR_BP_NEEDED, shopData.inv.colorBlueprints[colorId] || 0);
+      if (prev >= SHOP_COLOR_BP_NEEDED) {
+        if (!shopData.inv.colors.includes(colorId)) shopData.inv.colors.push(colorId);
+        saveShop(shopData);
+        return { colorId, unlockedColor: false, stockpile: false, count: SHOP_COLOR_BP_NEEDED, total: shopData.colorBpTotal || 0, capped: true };
+      }
       const next = prev + 1;
       shopData.inv.colorBlueprints[colorId] = next;
       shopData.colorBpTotal = (shopData.colorBpTotal || 0) + 1;
@@ -979,7 +1024,7 @@
         stockpile = true;
       }
       saveShop(shopData);
-      return { colorId, unlockedColor, stockpile, count: next, total: shopData.colorBpTotal };
+      return { colorId, unlockedColor, stockpile, count: next, total: shopData.colorBpTotal, capped: false };
     }
     function contractDayKey() {
       const d = new Date();
@@ -1175,6 +1220,143 @@
 
     let myId = 1; let roomCode = ""; let inLobby = true;
     let pendingJoin = false; // true while waiting for the server to accept a join_room
+    let lobbyRoster = []; // [{id, name}] from server lobby_state
+    let lobbyMatchStarted = false;
+    let lobbyAllowLateJoin = false;
+    let lobbyHostId = 1;
+    let cpuDifficulty = sessionStorage.getItem("astraclash_cpu_diff") || "normal"; // easy | normal | hard
+    let lobbyCpuCount = 0; // CPUs to spawn when host starts
+    let cpuShips = {}; // id -> ship state (host-simulated)
+    let nextCpuId = 101;
+
+    function pilotDisplayName() {
+      if (activePilot) return (activePilot.display_name || activePilot.username || "PILOT").slice(0, 24);
+      return "PILOT";
+    }
+    function isLobbyHost() {
+      return Number(myId) === Number(lobbyHostId) || isHost();
+    }
+    function beginMatchFromLobby() {
+      lobbyMatchStarted = true;
+      if (isLobbyHost() && lobbyCpuCount > 0) spawnLobbyCpus(lobbyCpuCount);
+      setLobbyState(false);
+      menuMode = "in_game";
+      statusMessage = lobbyCpuCount > 0 ? `Match started · ${lobbyCpuCount} CPU (${cpuDifficulty})` : "Match started!";
+      statusColor = CYAN;
+      try { SFX.matchEnd(); } catch (e) {}
+    }
+    function cpuDiffParams() {
+      if (cpuDifficulty === "easy") return { speed: 0.55, aim: 18, fire: 0.35, react: 0.7 };
+      if (cpuDifficulty === "hard") return { speed: 0.95, aim: 4, fire: 0.85, react: 0.15 };
+      return { speed: 0.75, aim: 10, fire: 0.55, react: 0.35 };
+    }
+    function spawnLobbyCpus(n) {
+      cpuShips = {};
+      const maxAdd = Math.max(0, 5); // keep room under 6 with host
+      const count = Math.min(Math.max(0, n | 0), maxAdd);
+      for (let i = 0; i < count; i++) {
+        const id = nextCpuId++;
+        const ang = (i / Math.max(1, count)) * Math.PI * 2;
+        cpuShips[id] = {
+          id, world_x: Math.cos(ang) * 500, world_y: Math.sin(ang) * 500,
+          angle: (ang * 180 / Math.PI + 180) % 360,
+          hp: 6, max_hp: 6, alive: true, xp: 0, tier: 0, kills: 0,
+          color: RAINBOW[(i + 2) % RAINBOW.length] || CYAN,
+          name: `CPU-${cpuDifficulty[0].toUpperCase()}${i + 1}`,
+          title: null, trail: null, is_cpu: true,
+          fireCd: 0.5 + Math.random(), vx: 0, vy: 0
+        };
+      }
+    }
+    function clearCpus() { cpuShips = {}; }
+    function updateCpuShips(dt) {
+      if (!isHost() || !lobbyMatchStarted) return;
+      const params = cpuDiffParams();
+      for (const id of Object.keys(cpuShips)) {
+        const c = cpuShips[id];
+        if (!c || !c.alive || c.hp <= 0) continue;
+        // target nearest living human/cpu
+        let best = null, bestD = 1e12;
+        const candidates = [];
+        if (myShip && myShip.alive) candidates.push(myShip);
+        for (const pid in remoteShips) {
+          const p = remoteShips[pid];
+          if (p && p.alive && p.hp > 0 && Number(p.id) !== Number(c.id)) candidates.push(p);
+        }
+        for (const oid in cpuShips) {
+          if (oid === id) continue;
+          const o = cpuShips[oid];
+          if (o && o.alive && o.hp > 0) candidates.push(o);
+        }
+        for (const t of candidates) {
+          const d = (t.world_x - c.world_x) ** 2 + (t.world_y - c.world_y) ** 2;
+          if (d < bestD) { bestD = d; best = t; }
+        }
+        // also sometimes chase ore
+        let oreTarget = null;
+        if (ores && ores.length && Math.random() < 0.25) {
+          let od = 1e12;
+          for (const o of ores) {
+            const d = (o.x - c.world_x) ** 2 + (o.y - c.world_y) ** 2;
+            if (d < od) { od = d; oreTarget = o; }
+          }
+        }
+        const chase = (oreTarget && bestD > 350 * 350) ? { world_x: oreTarget.x, world_y: oreTarget.y } : best;
+        if (chase) {
+          const dx = chase.world_x - c.world_x;
+          const dy = chase.world_y - c.world_y;
+          let want = Math.atan2(-dy, dx) * 180 / Math.PI;
+          let diff = ((want - c.angle + 540) % 360) - 180;
+          const turn = Math.max(-4, Math.min(4, diff * (0.08 + params.react)));
+          c.angle = (c.angle + turn + 360) % 360;
+          const spd = BASE_MOVE_SPEED * params.speed;
+          const rad = c.angle * Math.PI / 180;
+          c.world_x += Math.cos(rad) * spd * dt * 55;
+          c.world_y -= Math.sin(rad) * spd * dt * 55;
+          c.world_x = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, c.world_x));
+          c.world_y = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, c.world_y));
+        }
+        c.fireCd = (c.fireCd || 0) - dt;
+        if (best && c.fireCd <= 0 && bestD < 700 * 700) {
+          const dx = best.world_x - c.world_x;
+          const dy = best.world_y - c.world_y;
+          let aim = Math.atan2(-dy, dx) * 180 / Math.PI;
+          aim += (Math.random() - 0.5) * params.aim * 2;
+          const rad = aim * Math.PI / 180;
+          if (Math.random() < params.fire) {
+            lasers.push({
+              x: c.world_x + Math.cos(rad) * (SHIP_SIZE + 8),
+              y: c.world_y - Math.sin(rad) * (SHIP_SIZE + 8),
+              angle: Math.round(aim), owner: c.id, dmg: 1, pierce: false,
+              speed: 12, is_missile: false, is_mine: false, boomerang: false
+            });
+            c.fireCd = 0.35 + Math.random() * 0.4 + (1 - params.fire) * 0.4;
+          }
+        }
+      }
+    }
+    function cpuShipsPayload() {
+      return Object.values(cpuShips).map(c => ({
+        id: c.id, world_x: Number(c.world_x.toFixed(1)), world_y: Number(c.world_y.toFixed(1)),
+        angle: Math.round(c.angle), hp: c.hp, max_hp: c.max_hp, alive: c.alive,
+        xp: c.xp || 0, tier: c.tier || 0, kills: c.kills || 0,
+        color: c.color, name: c.name, title: null, trail: null, is_cpu: true
+      }));
+    }
+    function mergeCpuShipsFromPayload(list) {
+      if (!Array.isArray(list)) return;
+      for (const s of list) {
+        const id = Number(s.id);
+        if (!Number.isFinite(id)) continue;
+        remoteShips[id] = {
+          id, world_x: Number(s.world_x), world_y: Number(s.world_y),
+          angle: Number(s.angle) || 0, hp: Number(s.hp) || 0, max_hp: Number(s.max_hp) || 6,
+          alive: s.alive !== false, xp: Number(s.xp) || 0, tier: Number(s.tier) || 0,
+          kills: Number(s.kills) || 0, color: s.color || CYAN, name: s.name || `CPU ${id}`,
+          title: null, trail: null, is_cpu: true
+        };
+      }
+    }
 
     function applyArmedShopBoosts() {
       if (!myShip) return;
@@ -1392,20 +1574,52 @@
       const action = msg.action; 
       const status = msg.status;
 
-      if (action === "player_joined" && inLobby) setLobbyState(false);
+      if (action === "lobby_state") {
+        lobbyRoster = Array.isArray(msg.roster) ? msg.roster : [];
+        lobbyMatchStarted = !!msg.match_started;
+        lobbyAllowLateJoin = !!msg.allow_late_join;
+        if (msg.host_id !== undefined) lobbyHostId = Number(msg.host_id) || 1;
+        if (msg.room_code) roomCode = msg.room_code;
+        if (!lobbyMatchStarted && inLobby) menuMode = "waiting";
+      }
+
+      if (action === "match_start") {
+        pendingJoin = false;
+        beginMatchFromLobby();
+      }
+
+      if (action === "player_joined") {
+        // Stay in lobby until host starts (unless already in match)
+        if (!lobbyMatchStarted && inLobby) menuMode = "waiting";
+      }
 
       if (status === "ok") {
         if (msg.player_id !== undefined) { 
           myId = Number(msg.player_id) || 1; 
-          initMyShip(); 
-          if (pendingJoin) { pendingJoin = false; setLobbyState(false); }
+          initMyShip();
+          if (msg.host_id !== undefined) lobbyHostId = Number(msg.host_id) || 1;
+          if (msg.allow_late_join !== undefined) lobbyAllowLateJoin = !!msg.allow_late_join;
+          if (msg.match_started !== undefined) lobbyMatchStarted = !!msg.match_started;
+          if (pendingJoin) {
+            pendingJoin = false;
+            if (lobbyMatchStarted) {
+              // Late join into live match
+              setLobbyState(false);
+              menuMode = "in_game";
+            } else {
+              menuMode = "waiting";
+              sendMsg({ action: "set_name", name: pilotDisplayName() });
+            }
+          } else if (!lobbyMatchStarted) {
+            menuMode = "waiting";
+            sendMsg({ action: "set_name", name: pilotDisplayName() });
+          }
         }
         if (msg.room_code !== undefined) {
           roomCode = msg.room_code;
           if (roomCode) {
             lastRoomCode = String(roomCode);
             sessionStorage.setItem("astraclash_last_room", lastRoomCode);
-            // Allow rejoin prompt next time they return to hangar
             sessionStorage.removeItem("astraclash_rejoin_dismissed");
             rejoinPopupOpen = true;
           }
@@ -1414,24 +1628,31 @@
         if (msg.rooms !== undefined) {
           const rooms = msg.rooms;
           if (rooms.length > 0) {
-            sendMsg({ action: "join_room", room_code: rooms[0], password: null });
-            statusMessage = "Joining active arena...";
+            sendMsg({ action: "join_room", room_code: rooms[0], password: null, name: pilotDisplayName() });
+            statusMessage = "Joining lobby...";
             pendingJoin = true;
           } else {
-            sendMsg({ action: "create_room", public: true, password: null });
-            statusMessage = "Room created. Waiting for opponent..."; 
+            sendMsg({ action: "create_room", public: true, password: null, name: pilotDisplayName(), allow_late_join: false });
+            statusMessage = "Public room created — start when ready.";
+            lobbyMatchStarted = false;
             menuMode = "waiting";
           }
         }
       } else if (status === "error") {
         pendingJoin = false;
         statusMessage = msg.msg || "Action failed."; 
-        statusColor = RAINBOW[1]; 
+        statusColor = RAINBOW[1];
+        if (msg.action === "kicked" || (msg.msg && String(msg.msg).toLowerCase().includes("kick"))) {
+          lobbyRoster = [];
+          roomCode = "";
+        }
         menuMode = "main";
+        setLobbyState(true);
       }
 
       if (action === "game_packet") {
-        if (inLobby) setLobbyState(false);
+        if (inLobby && lobbyMatchStarted) setLobbyState(false);
+        if (inLobby && !lobbyMatchStarted) return; // ignore combat until start
         const payload = msg.payload; 
         if (!payload) return;
 
@@ -1443,6 +1664,7 @@
           const t = Number(payload.match_time);
           if (Number.isFinite(t)) matchTimeLeft = t;
         }
+        if (payload.cpu_ships) mergeCpuShipsFromPayload(payload.cpu_ships);
         if (payload.match_over && !matchOver) {
           finishMatch(payload.match_reason || "Match complete.");
         }
@@ -1886,6 +2108,7 @@
       recentCollectedIds.clear();
       recentAsteroidHp.clear();
       for (const k in remoteShips) delete remoteShips[k];
+      clearCpus();
       pendingJoin = false;
       roomCode = "";
 
@@ -1969,6 +2192,11 @@
       const amount = Number(dmg) || 1;
       const wasAlive = rp.alive !== false && (Number.isFinite(rp.hp) ? rp.hp : 6) > 0;
       rp.hp = Math.max(0, (Number.isFinite(rp.hp) ? rp.hp : 6) - amount);
+      if (cpuShips[id]) {
+        cpuShips[id].hp = rp.hp;
+        cpuShips[id].alive = rp.hp > 0;
+        if (rp.hp <= 0) cpuShips[id].alive = false;
+      }
       if (amount > 0 && wasAlive) {
         matchStats.damageDealt += amount;
         trackContract("damage", amount);
@@ -1990,10 +2218,16 @@
           const coinGain = 10 * Math.max(1, vTier || 0);
           // If tier 0, still give 10 for a kill
           const coinsAwarded = vTier <= 0 ? 10 : coinGain;
-          if (activePilot && activePilot.id) {
-            addCoinsDelta(coinsAwarded).then(() => {
-              spawnFloatText(rp.world_x, rp.world_y - 36, `+${coinsAwarded} COINS`, ORE_GOLD);
-            }).catch(() => {});
+          if (activePilot) {
+            addCoinsDelta(coinsAwarded).then(({ error }) => {
+              if (!error) {
+                spawnFloatText(rp.world_x, rp.world_y - 36, `+${coinsAwarded} COINS`, ORE_GOLD);
+                refreshCoins();
+              } else {
+                console.warn("kill coins failed", error);
+                spawnFloatText(rp.world_x, rp.world_y - 36, "COIN ERROR", RAINBOW[1]);
+              }
+            }).catch((e) => console.warn(e));
           }
           // Steal half the XP they had collected
           const stolenXp = Math.floor((Number(rp.xp) || 0) * 0.5);
@@ -2337,12 +2571,12 @@
             dismissRejoinPopup();
           }
         } else {
-          // Settings gear (top-left under banner area)
+          // Settings gear (top-left)
           if (pos.x >= 18 && pos.x <= 58 && pos.y >= 18 && pos.y <= 58) {
             menuMode = "settings";
           }
-          // Account banner → soft refresh / stays on main (tap could open account later)
-          else if (pos.x >= 70 && pos.x <= 320 && pos.y >= 16 && pos.y <= 72) {
+          // Account banner top-right → refresh
+          else if (pos.x >= V_WIDTH - 270 && pos.x <= V_WIDTH - 20 && pos.y >= 16 && pos.y <= 72) {
             refreshCoins();
             reloadShopForPilot();
             statusMessage = "Pilot profile refreshed.";
@@ -2691,6 +2925,47 @@
         }
         } // end else (!bpCrateUI)
 
+      } else if (menuMode === "waiting") {
+        const host = isLobbyHost();
+        const roster = lobbyRoster.length ? lobbyRoster : [{ id: myId, name: pilotDisplayName() }];
+        if (host) {
+          for (let i = 0; i < Math.min(roster.length, 6); i++) {
+            const p = roster[i];
+            const ry = 200 + i * 28;
+            if (Number(p.id) !== Number(myId) && pos.x >= cx + 110 && pos.x <= cx + 200 && pos.y >= ry && pos.y <= ry + 26) {
+              sendMsg({ action: "kick_player", player_id: p.id });
+              statusMessage = `Kicking ${p.name}...`;
+            }
+          }
+          // Difficulty: Easy / Normal / Hard
+          const diffs = ["easy", "normal", "hard"];
+          for (let di = 0; di < 3; di++) {
+            const dx = cx - 200 + di * 100;
+            if (pos.x >= dx && pos.x <= dx + 90 && pos.y >= 370 && pos.y <= 400) {
+              cpuDifficulty = diffs[di];
+              sessionStorage.setItem("astraclash_cpu_diff", cpuDifficulty);
+            }
+          }
+          // CPU count - / +
+          if (pos.x >= cx - 200 && pos.x <= cx - 120 && pos.y >= 410 && pos.y <= 442) {
+            lobbyCpuCount = Math.max(0, lobbyCpuCount - 1);
+          }
+          if (pos.x >= cx - 50 && pos.x <= cx + 30 && pos.y >= 410 && pos.y <= 442) {
+            const humanN = roster.length;
+            lobbyCpuCount = Math.min(5, Math.max(0, 6 - humanN), lobbyCpuCount + 1);
+          }
+          // Late join
+          if (pos.x >= cx + 50 && pos.x <= cx + 200 && pos.y >= 410 && pos.y <= 442) {
+            lobbyAllowLateJoin = !lobbyAllowLateJoin;
+            sendMsg({ action: "set_allow_late_join", allow_late_join: lobbyAllowLateJoin });
+          }
+          // Start
+          if (pos.x >= cx - 100 && pos.x <= cx + 100 && pos.y >= 455 && pos.y <= 495) {
+            sendMsg({ action: "start_match" });
+            statusMessage = "Starting match...";
+            statusColor = CYAN;
+          }
+        }
       } else if (menuMode === "host_private") {
         // Entry fee row
         if (pos.y >= 455 && pos.y <= 483) {
@@ -2746,7 +3021,7 @@
           closeMobileKeyboard();
           matchConfig = clampMatchConfig(matchConfig);
           if (!isConnected) connectWs();
-          lastRoomPass = passwordInput || ""; sessionStorage.setItem("astraclash_last_pass", lastRoomPass); sendMsg({ action: "create_room", public: false, password: passwordInput || null }); 
+          lastRoomPass = passwordInput || ""; sessionStorage.setItem("astraclash_last_pass", lastRoomPass); sendMsg({ action: "create_room", public: false, password: passwordInput || null, name: pilotDisplayName(), allow_late_join: !!lobbyAllowLateJoin }); 
           menuMode = "waiting"; 
           statusMessage = "Creating private arena...";
         } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) { 
@@ -2763,7 +3038,7 @@
         } else if (pos.x >= cx - 140 && pos.x <= cx - 10 && pos.y >= 365 && pos.y <= 407 && roomCodeInput.length === 4) {
           closeMobileKeyboard();
           if (!isConnected) connectWs();
-          lastRoomCode = roomCodeInput; lastRoomPass = passwordInput || ""; sessionStorage.setItem("astraclash_last_room", lastRoomCode); sessionStorage.setItem("astraclash_last_pass", lastRoomPass); sendMsg({ action: "join_room", room_code: roomCodeInput, password: passwordInput || null }); 
+          lastRoomCode = roomCodeInput; lastRoomPass = passwordInput || ""; sessionStorage.setItem("astraclash_last_room", lastRoomCode); sessionStorage.setItem("astraclash_last_pass", lastRoomPass); sendMsg({ action: "join_room", room_code: roomCodeInput, password: passwordInput || null, name: pilotDisplayName() }); 
           statusMessage = `Joining room [${roomCodeInput}]...`; 
           pendingJoin = true;
         } else if (pos.x >= cx + 10 && pos.x <= cx + 140 && pos.y >= 365 && pos.y <= 407) {
@@ -2801,7 +3076,7 @@
       pendingJoin = true;
       rejoinPopupOpen = false;
       sessionStorage.setItem("astraclash_rejoin_dismissed", lastRoomCode);
-      sendMsg({ action: "join_room", room_code: lastRoomCode, password: lastRoomPass || null });
+      sendMsg({ action: "join_room", room_code: lastRoomCode, password: lastRoomPass || null, name: pilotDisplayName() });
       statusMessage = `Rejoining ${lastRoomCode}...`;
       statusColor = RAINBOW[3];
     }
@@ -3238,21 +3513,64 @@
         vctx.fillText("Same account as Paradox · username + password (no email needed)", cx, actY + 55);
 
       } else if (menuMode === "waiting") {
-        drawCard(vctx, cx - 200, 180, 400, 260, CYAN);
-        vctx.font = "bold 18px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
-        vctx.fillText(`ROOM CODE: ${roomCode || "PUBLIC"}`, cx, 220);
-        vctx.font = "12px Consolas"; vctx.fillStyle = WHITE;
-        vctx.fillText("Waiting for opponents (Max 6)", cx, 248);
-        vctx.fillStyle = GRAY;
-        vctx.fillText("Match clock starts when 2+ pilots are in arena", cx, 270);
-        // Live roster preview (once someone joins, remoteShips may still be empty in pure waiting)
-        vctx.font = "11px Consolas";
-        vctx.fillStyle = CYAN;
-        vctx.fillText("PILOTS WILL APPEAR WHEN THE FIGHT BEGINS", cx, 300);
-        const pulse = Math.floor((performance.now() / 50) % 10);
-        vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 340, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
+        const host = isLobbyHost();
+        drawCard(vctx, cx - 230, 80, 460, 440, CYAN);
+        vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
+        vctx.fillText(host ? "LOBBY — YOU ARE HOST" : "LOBBY — WAITING", cx, 108);
+        vctx.font = "14px Consolas"; vctx.fillStyle = RAINBOW[3];
+        vctx.fillText("ROOM " + (roomCode || "????"), cx, 132);
         vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
-        vctx.fillText("Share the room code with friends", cx, 390);
+        vctx.fillText(lobbyAllowLateJoin ? "Late join: ON" : "Late join: OFF", cx, 150);
+
+        vctx.font = "bold 12px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+        vctx.fillText("PILOTS IN LOBBY", cx - 200, 175);
+        const roster = lobbyRoster.length ? lobbyRoster : [{ id: myId, name: pilotDisplayName() }];
+        for (let i = 0; i < Math.min(roster.length, 6); i++) {
+          const p = roster[i];
+          const ry = 200 + i * 28;
+          const isH = Number(p.id) === Number(lobbyHostId);
+          drawCard(vctx, cx - 200, ry, host ? 300 : 400, 26, isH ? ORE_GOLD : DARK_GRAY);
+          vctx.font = "12px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "left";
+          vctx.fillText((isH ? "★ " : "") + (p.name || ("PILOT " + p.id)), cx - 188, ry + 17);
+          if (host && Number(p.id) !== Number(myId)) {
+            drawCard(vctx, cx + 110, ry, 90, 26, RAINBOW[1]);
+            vctx.font = "11px Consolas"; vctx.fillStyle = RAINBOW[1]; vctx.textAlign = "center";
+            vctx.fillText("KICK", cx + 155, ry + 17);
+          }
+        }
+        if (lobbyCpuCount > 0) {
+          vctx.font = "11px Consolas"; vctx.fillStyle = ORE_GOLD; vctx.textAlign = "left";
+          vctx.fillText("CPU x" + lobbyCpuCount + " (" + cpuDifficulty + ") will join on start", cx - 200, 360);
+        }
+
+        if (host) {
+          vctx.font = "10px Consolas"; vctx.fillStyle = GRAY; vctx.textAlign = "center";
+          vctx.fillText("CPU DIFFICULTY", cx, 362);
+          const diffs = [["easy", "EASY"], ["normal", "NORMAL"], ["hard", "HARD"]];
+          for (let di = 0; di < 3; di++) {
+            const dx = cx - 200 + di * 100;
+            const on = cpuDifficulty === diffs[di][0];
+            drawCard(vctx, dx, 370, 90, 30, on ? CYAN : DARK_GRAY);
+            vctx.font = "bold 11px Consolas"; vctx.fillStyle = on ? CYAN : WHITE; vctx.textAlign = "center";
+            vctx.fillText(diffs[di][1], dx + 45, 390);
+          }
+          drawCard(vctx, cx - 200, 410, 80, 32, DARK_GRAY);
+          vctx.fillStyle = WHITE; vctx.fillText("CPU -", cx - 160, 431);
+          drawCard(vctx, cx - 50, 410, 80, 32, DARK_GRAY);
+          vctx.fillStyle = WHITE; vctx.fillText("CPU +", cx - 10, 431);
+          drawCard(vctx, cx + 50, 410, 150, 32, lobbyAllowLateJoin ? RAINBOW[4] : DARK_GRAY);
+          vctx.fillStyle = WHITE; vctx.fillText(lobbyAllowLateJoin ? "LATE JOIN ON" : "LATE JOIN OFF", cx + 125, 431);
+          drawCard(vctx, cx - 100, 455, 200, 40, CYAN);
+          vctx.font = "bold 14px Consolas"; vctx.fillStyle = CYAN;
+          vctx.fillText("START MATCH", cx, 480);
+        } else {
+          vctx.font = "12px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
+          vctx.fillText("Waiting for host to start the match…", cx, 430);
+          if (lobbyCpuCount > 0) {
+            vctx.fillStyle = GRAY;
+            vctx.fillText("Host added " + lobbyCpuCount + " CPU (" + cpuDifficulty + ")", cx, 455);
+          }
+        }
       } else {
         // Shared chrome for hangar screens (main / private / settings / shop / host / join)
         // Title top-center
@@ -3269,22 +3587,23 @@
           vctx.fillText("⚙", 38, 45);
         }
 
-        // Account banner top-left (Paradox-style)
+        // Account banner top-right (Paradox-style)
         if (activePilot && (menuMode === "main" || menuMode === "private" || menuMode === "settings")) {
-          drawCard(vctx, 70, 16, 250, 56, "rgba(0, 255, 255, 0.35)");
+          const bx = V_WIDTH - 270;
+          drawCard(vctx, bx, 16, 250, 56, "rgba(0, 255, 255, 0.35)");
           vctx.textAlign = "left";
           vctx.font = "bold 13px Consolas";
           vctx.fillStyle = RAINBOW[4];
           const dn = activePilot.display_name || activePilot.username || "PILOT";
-          vctx.fillText(dn.slice(0, 18), 82, 36);
+          vctx.fillText(dn.slice(0, 18), bx + 12, 36);
           const ttl = (shopData && shopData.activeTitle) ? titleLabel(shopData.activeTitle) : null;
           vctx.font = "10px Consolas";
           vctx.fillStyle = ttl ? RAINBOW[3] : GRAY;
-          vctx.fillText(ttl ? ttl.slice(0, 22) : (activePilot.username || ""), 82, 52);
+          vctx.fillText(ttl ? ttl.slice(0, 22) : (activePilot.username || ""), bx + 12, 52);
           vctx.font = "bold 12px Consolas";
           vctx.fillStyle = ORE_GOLD;
           vctx.textAlign = "right";
-          vctx.fillText(`${getCoins()}c`, 308, 42);
+          vctx.fillText(getCoins() + "c", bx + 238, 42);
         }
 
         if (menuMode === "main") {
@@ -3356,12 +3675,15 @@
           drawCard(vctx, cx - 200, 140, 400, 300, CYAN);
           vctx.font = "bold 20px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
           vctx.fillText("SETTINGS", cx, 175);
-          drawCard(vctx, cx - 140, 220, 280, 40, sfxMuted ? RAINBOW[1] : DARK_GRAY);
-          vctx.font = "14px Consolas"; vctx.fillStyle = WHITE;
+          // drawCard sets fillStyle to panel bg — always re-set text color after each card
+          drawCard(vctx, cx - 140, 220, 280, 40, sfxMuted ? RAINBOW[1] : CYAN);
+          vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center";
           vctx.fillText(sfxMuted ? "SFX: MUTED" : "SFX: ON", cx, 245);
-          drawCard(vctx, cx - 140, 280, 280, 40, DARK_GRAY);
-          vctx.fillText(`VOLUME: ${Math.round(sfxVolume * 100)}%`, cx, 305);
+          drawCard(vctx, cx - 140, 280, 280, 40, CYAN);
+          vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE;
+          vctx.fillText("VOLUME: " + Math.round((Number(sfxVolume) || 0.7) * 100) + "%", cx, 305);
           drawCard(vctx, cx - 140, 340, 280, 40, RAINBOW[1]);
+          vctx.font = "bold 14px Consolas"; vctx.fillStyle = RAINBOW[1];
           vctx.fillText("LOG OUT", cx, 365);
           drawCard(vctx, cx - 80, 420, 160, 36, WHITE);
           vctx.font = "bold 13px Consolas"; vctx.fillStyle = WHITE;
@@ -3743,7 +4065,7 @@
 
       // Match clock (host drives; others follow packets)
       if (!matchOver) {
-        const playerCount = 1 + Object.keys(remoteShips).length;
+        const playerCount = 1 + Object.keys(remoteShips).length; // includes host-synced CPUs
         const matchActive = playerCount >= 2;
         if (isHost()) {
           // Solar flare event
@@ -3814,6 +4136,13 @@
         return;
       }
 
+      if (!inLobby && isHost()) {
+        updateCpuShips(dt);
+        for (const id of Object.keys(cpuShips)) {
+          const c = cpuShips[id];
+          if (c) remoteShips[c.id] = c;
+        }
+      }
       if (lasers.length > 80) lasers.splice(0, lasers.length - 80);
       if (particles.length > 120) particles.splice(0, particles.length - 120);
       
@@ -4299,6 +4628,7 @@
               trail: (shopData && shopData.activeTrail) ? shopData.activeTrail : null
             } 
           };
+          if (isHost() && Object.keys(cpuShips).length) outPayload.cpu_ships = cpuShipsPayload();
           if (isHost()) {
             outPayload.match_config = {
               mode: matchConfig.mode,
