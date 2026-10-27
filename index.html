@@ -209,10 +209,13 @@
     }
 
     function updateTouchUIVisibility() {
-      const showTouch = isTouchDevice && !inLobby;
-      document.getElementById("group-dpad").style.display = showTouch ? "block" : "none";
-      document.getElementById("group-action").style.display = showTouch ? "flex" : "none";
-      document.getElementById("group-upgrade").style.display = showTouch ? "flex" : "none";
+      const showTouch = touchControlsEnabled && !inLobby && !matchOver;
+      const dpad = document.getElementById("group-dpad");
+      const act = document.getElementById("group-action");
+      const upg = document.getElementById("group-upgrade");
+      if (dpad) dpad.style.display = showTouch ? "block" : "none";
+      if (act) act.style.display = showTouch ? "flex" : "none";
+      if (upg) upg.style.display = showTouch ? "flex" : "none";
     }
 
     const V_WIDTH = 1000; const V_HEIGHT = 600;
@@ -394,8 +397,9 @@
     let lastRoomPass = sessionStorage.getItem("astraclash_last_pass") || "";
     let rejoinPopupOpen = Boolean(lastRoomCode) && sessionStorage.getItem("astraclash_rejoin_dismissed") !== lastRoomCode;
     let sfxMuted = sessionStorage.getItem("astraclash_sfx_muted") === "1";
-    let sfxVolume = Number(sessionStorage.getItem("astraclash_sfx_vol") || "0.7");
-    if (!Number.isFinite(sfxVolume)) sfxVolume = 0.7;
+    let sfxVolume = 0.7; // fixed volume (settings uses touch toggle instead)
+    let touchControlsEnabled = sessionStorage.getItem("astraclash_touch") === "1"
+      || (sessionStorage.getItem("astraclash_touch") !== "0" && (('ontouchstart' in window) || (navigator.maxTouchPoints > 0)));
 
     const stars = [];
     for (let i = 0; i < 40; i++) { stars.push({ x: Math.random() * V_WIDTH * 2, y: Math.random() * V_HEIGHT * 2, z: 0.1 + Math.random() * 0.5 }); }
@@ -418,6 +422,7 @@
     let isConnecting = false;
     let connectionError = false;
     let connectStartTime = 0;
+    let connectOpenedAt = 0; // when socket actually opens (smooth finish)
 
     // --- Supabase (same project as Paradox) ---
     const SUPABASE_URL = "https://vghxiupmcfvoidxmeenp.supabase.co";
@@ -1460,6 +1465,7 @@
         isConnecting = true;
         connectionError = false;
         connectStartTime = performance.now();
+        connectOpenedAt = 0;
         ws = new WebSocket(RENDER_URL);
         statusMessage = "Booting up servers..."; statusColor = RAINBOW[3];
         
@@ -1467,11 +1473,11 @@
           isConnected = true;
           isConnecting = false;
           connectionError = false;
+          connectOpenedAt = performance.now();
           statusMessage = "Servers online."; 
           statusColor = RAINBOW[4];
-          if (menuMode === "connecting") {
-            menuMode = activePilot ? "main" : "account";
-          }
+          // Stay on connecting screen briefly so the boot bar can finish cleanly
+          // (menu advances from the render/tick path below)
         };
 
         ws.onmessage = (event) => { 
@@ -1633,8 +1639,9 @@
             pendingJoin = true;
           } else {
             sendMsg({ action: "create_room", public: true, password: null, name: pilotDisplayName(), allow_late_join: false });
-            statusMessage = "Public room created — start when ready.";
+            statusMessage = "Lobby created — waiting for an opponent...";
             lobbyMatchStarted = false;
+            lobbyIsPublic = true;
             menuMode = "waiting";
           }
         }
@@ -2096,6 +2103,32 @@
       } catch (e) { console.warn(e); }
     }
 
+    function leaveLobbyOrMatch() {
+      // From waiting lobby or in-match: disconnect and return to hangar
+      matchOver = false;
+      matchResults = null;
+      lobbyRoster = [];
+      lobbyMatchStarted = false;
+      lobbyCpuCount = 0;
+      clearCpus();
+      for (const k in remoteShips) delete remoteShips[k];
+      roomCode = "";
+      pendingJoin = false;
+      if (ws) {
+        const old = ws;
+        ws = null;
+        old.onopen = old.onmessage = old.onerror = old.onclose = null;
+        try { old.close(); } catch (e) {}
+      }
+      isConnected = false;
+      isConnecting = false;
+      setLobbyState(true);
+      menuMode = "main";
+      statusMessage = "Left lobby.";
+      statusColor = CYAN;
+      connectWs();
+      updateTouchUIVisibility();
+    }
     function returnToLobbyFromMatch() {
       matchOver = false;
       matchResults = null;
@@ -2586,9 +2619,12 @@
           else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 220 && pos.y <= 278) {
             if (!isConnected) connectWs();
             applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
-            sendMsg({ action: "list_public" });
-            statusMessage = "Searching active public games...";
+            lobbyIsPublic = true;
+            lobbyCpuCount = 0;
+            menuMode = "finding";
+            statusMessage = "Finding lobbies...";
             statusColor = RAINBOW[3];
+            sendMsg({ action: "list_public" });
           }
           // Private Matches hub
           else if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 295 && pos.y <= 353) {
@@ -2602,6 +2638,14 @@
             shopMessage = "";
             menuMode = "shop";
           }
+        }
+      } else if (menuMode === "finding") {
+        // Cancel search
+        if (pos.x >= cx - 90 && pos.x <= cx + 90 && pos.y >= 430 && pos.y <= 470) {
+          pendingJoin = false;
+          menuMode = "main";
+          statusMessage = "Search cancelled.";
+          statusColor = GRAY;
         }
       } else if (menuMode === "private") {
         if (pos.x >= cx - 160 && pos.x <= cx + 160 && pos.y >= 220 && pos.y <= 278) {
@@ -2620,13 +2664,9 @@
           sfxMuted = !sfxMuted;
           sessionStorage.setItem("astraclash_sfx_muted", sfxMuted ? "1" : "0");
         } else if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 280 && pos.y <= 320) {
-          // cycle volume 0.3 -> 0.7 -> 1.0
-          if (sfxVolume < 0.5) sfxVolume = 0.7;
-          else if (sfxVolume < 0.85) sfxVolume = 1.0;
-          else sfxVolume = 0.3;
-          sessionStorage.setItem("astraclash_sfx_vol", String(sfxVolume));
-          sfxMuted = false;
-          sessionStorage.setItem("astraclash_sfx_muted", "0");
+          touchControlsEnabled = !touchControlsEnabled;
+          sessionStorage.setItem("astraclash_touch", touchControlsEnabled ? "1" : "0");
+          updateTouchUIVisibility();
         } else if (pos.x >= cx - 140 && pos.x <= cx + 140 && pos.y >= 340 && pos.y <= 380) {
           // logout
           sessionStorage.removeItem("astraclash_current_user");
@@ -2924,6 +2964,10 @@
         } // end else (!bpCrateUI)
 
       } else if (menuMode === "waiting") {
+        // Leave lobby (top-right)
+        if (pos.x >= V_WIDTH - 120 && pos.x <= V_WIDTH - 16 && pos.y >= 12 && pos.y <= 44) {
+          leaveLobbyOrMatch();
+        }
         const host = isPrivateLobbyHost();
         const roster = lobbyRoster.length ? lobbyRoster : [{ id: myId, name: pilotDisplayName() }];
         if (host) {
@@ -3086,6 +3130,14 @@
       if (!inLobby && matchOver) {
         if (hitResultsClose(getCanvasCoords(e.clientX, e.clientY))) returnToLobbyFromMatch();
         return;
+      }
+      if (!inLobby && !matchOver) {
+        const pos = getCanvasCoords(e.clientX, e.clientY);
+        // Leave match — top right next to XP bar
+        if (pos.x >= V_WIDTH - 88 && pos.x <= V_WIDTH - 12 && pos.y >= 12 && pos.y <= 36) {
+          leaveLobbyOrMatch();
+          return;
+        }
       }
       handleMenuClick(getCanvasCoords(e.clientX, e.clientY));
     });
@@ -3374,8 +3426,21 @@
           vctx.arc(cx, 275, radius, animAngle, animAngle + 1.8);
           vctx.stroke();
 
-          const bootEst = 45;
-          const progress = Math.min(0.95, spinTime / bootEst);
+          // Faster ease while waiting; when socket opens, finish the last stretch smoothly
+          // instead of jumping straight to the hangar.
+          let progress;
+          if (isConnected && connectOpenedAt) {
+            const sinceOpen = (performance.now() - connectOpenedAt) / 1000;
+            const base = Math.min(0.82, spinTime / 10);
+            progress = Math.min(1, base + sinceOpen / 0.9 * (1 - base));
+            // Advance only after bar is full (or ~1s after open, whichever first completes look)
+            if (progress >= 0.995 || sinceOpen >= 1.0) {
+              menuMode = activePilot ? "main" : "account";
+            }
+          } else {
+            // Reach ~82% in ~10s (faster than old 45s) so cold starts still feel active
+            progress = Math.min(0.82, spinTime / 10);
+          }
           const barW = 360, barH = 12, barX = cx - barW / 2, barY = 310;
           vctx.fillStyle = "rgb(20, 30, 50)";
           vctx.fillRect(barX, barY, barW, barH);
@@ -3387,12 +3452,12 @@
 
           vctx.font = "bold 15px Consolas";
           vctx.fillStyle = WHITE;
-          vctx.fillText("BOOTING UP SERVERS", cx, 345);
+          vctx.fillText(isConnected ? "CONNECTED" : "BOOTING UP SERVERS", cx, 345);
 
           const dots = ".".repeat(Math.floor(spinTime * 2) % 4);
           vctx.font = "12px Consolas";
           vctx.fillStyle = GRAY;
-          vctx.fillText("This may take a few moments" + dots, cx, 368);
+          vctx.fillText(isConnected ? ("Entering hangar" + dots) : ("This may take a few moments" + dots), cx, 368);
           vctx.fillStyle = "rgba(0, 255, 255, 0.7)";
           vctx.fillText(`Elapsed ${Math.floor(spinTime)}s`, cx, 390);
 
@@ -3510,11 +3575,46 @@
         vctx.fillStyle = GRAY;
         vctx.fillText("Same account as Paradox · username + password (no email needed)", cx, actY + 55);
 
+      } else if (menuMode === "finding") {
+        drawCard(vctx, cx - 240, 120, 480, 340, CYAN);
+        vctx.textAlign = "center";
+        vctx.font = "bold 26px Consolas";
+        vctx.fillStyle = CYAN;
+        vctx.fillText("FINDING LOBBIES", cx, 180);
+        const dots = ".".repeat(Math.floor((performance.now() / 400) % 4));
+        vctx.font = "14px Consolas";
+        vctx.fillStyle = WHITE;
+        vctx.fillText("Searching public arenas" + dots, cx, 220);
+        vctx.font = "12px Consolas";
+        vctx.fillStyle = GRAY;
+        vctx.fillText(statusMessage || "Quick Play matchmaking", cx, 250);
+        // rotating tips
+        const tipIdx = Math.floor(performance.now() / 5000) % BOOT_TIPS.length;
+        const tip = BOOT_TIPS[tipIdx];
+        vctx.font = "11px Consolas";
+        vctx.fillStyle = RAINBOW[3];
+        vctx.fillText("TIP", cx, 300);
+        vctx.fillStyle = WHITE;
+        if (tip.length > 58) {
+          const cut = tip.lastIndexOf(" ", 58);
+          vctx.fillText(tip.slice(0, cut > 0 ? cut : 58), cx, 322);
+          vctx.fillText(tip.slice(cut > 0 ? cut + 1 : 58), cx, 340);
+        } else {
+          vctx.fillText(tip, cx, 322);
+        }
+        const pulse = Math.floor((performance.now() / 50) % 10);
+        vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 380, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
+        drawCard(vctx, cx - 90, 430, 180, 40, WHITE);
+        vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE;
+        vctx.fillText("CANCEL", cx, 455);
       } else if (menuMode === "waiting") {
         const host = isPrivateLobbyHost();
+        drawCard(vctx, V_WIDTH - 120, 12, 104, 32, RAINBOW[1]);
+        vctx.font = "bold 12px Consolas"; vctx.fillStyle = RAINBOW[1]; vctx.textAlign = "center";
+        vctx.fillText("LEAVE", V_WIDTH - 68, 33);
         drawCard(vctx, cx - 230, 80, 460, 440, CYAN);
         vctx.font = "bold 18px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
-        vctx.fillText(lobbyIsPublic ? "QUICK PLAY LOBBY" : (host ? "LOBBY — YOU ARE HOST" : "LOBBY — WAITING"), cx, 108);
+        vctx.fillText(lobbyIsPublic ? "QUICK PLAY — WAITING FOR PLAYERS" : (host ? "LOBBY — YOU ARE HOST" : "LOBBY — WAITING"), cx, 108);
         vctx.font = "14px Consolas"; vctx.fillStyle = RAINBOW[3];
         vctx.fillText("ROOM " + (roomCode || "????"), cx, 132);
         vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
@@ -3679,13 +3779,12 @@
           drawCard(vctx, cx - 200, 140, 400, 300, CYAN);
           vctx.font = "bold 20px Consolas"; vctx.fillStyle = CYAN; vctx.textAlign = "center";
           vctx.fillText("SETTINGS", cx, 175);
-          // drawCard sets fillStyle to panel bg — always re-set text color after each card
           drawCard(vctx, cx - 140, 220, 280, 40, sfxMuted ? RAINBOW[1] : CYAN);
           vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE; vctx.textAlign = "center";
           vctx.fillText(sfxMuted ? "SFX: MUTED" : "SFX: ON", cx, 245);
-          drawCard(vctx, cx - 140, 280, 280, 40, CYAN);
+          drawCard(vctx, cx - 140, 280, 280, 40, touchControlsEnabled ? CYAN : DARK_GRAY);
           vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE;
-          vctx.fillText("VOLUME: " + Math.round((Number(sfxVolume) || 0.7) * 100) + "%", cx, 305);
+          vctx.fillText(touchControlsEnabled ? "TOUCH CONTROLS: ON" : "TOUCH CONTROLS: OFF", cx, 305);
           drawCard(vctx, cx - 140, 340, 280, 40, RAINBOW[1]);
           vctx.font = "bold 14px Consolas"; vctx.fillStyle = RAINBOW[1];
           vctx.fillText("LOG OUT", cx, 365);
@@ -4997,7 +5096,11 @@
       if (matchConfig.useTimer) ruleBits.push("TIMED");
       vctx.fillText(ruleBits.join("  ·  "), V_WIDTH / 2, 84);
 
-      const bm = 20; const by = 18; const bw = V_WIDTH - 40; const bh = 14;
+      // Shorter XP bar to leave room for LEAVE (top-right)
+      const bm = 20; const by = 18; const bw = V_WIDTH - 130; const bh = 14;
+      drawCard(vctx, V_WIDTH - 88, 12, 76, 24, RAINBOW[1]);
+      vctx.font = "bold 11px Consolas"; vctx.fillStyle = RAINBOW[1]; vctx.textAlign = "center";
+      vctx.fillText("LEAVE", V_WIDTH - 50, 28);
       const atMaxTier = myShip.tier >= TIER_XP_THRESHOLDS.length - 1;
       vctx.fillStyle = XP_BG; vctx.fillRect(bm, by, bw, bh);
       if (atMaxTier) {
