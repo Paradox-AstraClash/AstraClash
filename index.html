@@ -8,7 +8,9 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background-color: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; font-family: Consolas, monospace; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     #gameCanvas { background-color: rgb(10, 10, 25); image-rendering: pixelated; cursor: pointer; }
-    .touch-ui { position: fixed; z-index: 99; pointer-events: auto; display: none; }
+    .touch-ui { position: fixed; z-index: 99; pointer-events: auto; display: none !important; }
+    body.in-match .touch-ui { display: flex !important; }
+    body.in-match #group-dpad.touch-ui { display: block !important; }
     /* Virtual joystick — left side */
     .joy-wrap {
       bottom: 28px; left: 18px;
@@ -216,14 +218,18 @@
         && !matchOver
         && menuMode === "in_game"
       );
+      // Use body class so CSS !important default hide can't leave pads stuck on menus
+      try {
+        document.body.classList.toggle("in-match", showTouch);
+      } catch (e) {}
       const dpad = document.getElementById("group-dpad");
       const act = document.getElementById("group-action");
       const upg = document.getElementById("group-upgrade");
-      if (dpad) dpad.style.display = showTouch ? "block" : "none";
-      if (act) act.style.display = showTouch ? "flex" : "none";
-      if (upg) upg.style.display = showTouch ? "flex" : "none";
+      if (dpad) { dpad.style.display = ""; dpad.style.setProperty("display", showTouch ? "block" : "none", showTouch ? "" : "important"); }
+      if (act) { act.style.display = ""; act.style.setProperty("display", showTouch ? "flex" : "none", showTouch ? "" : "important"); }
+      if (upg) { upg.style.display = ""; upg.style.setProperty("display", showTouch ? "flex" : "none", showTouch ? "" : "important"); }
     }
-    updateTouchUIVisibility();
+    try { updateTouchUIVisibility(); } catch (e) {}
 
     const V_WIDTH = 1000; const V_HEIGHT = 600;
     const canvas = document.getElementById("gameCanvas"); const ctx = canvas.getContext("2d");
@@ -460,6 +466,8 @@
 
     let activePilot = JSON.parse(sessionStorage.getItem("astraclash_current_user") || "null");
     let menuMode = "connecting";
+    const recentKillCredit = new Map();
+    const KILL_CREDIT_LOCK_MS = 10000; // match 10s respawn
     let authTab = "login"; // 'register' or 'login'
     let authNameInput = "";
     let authDisplayInput = "";
@@ -1547,7 +1555,10 @@
           statusMessage = "Servers online."; 
           statusColor = RAINBOW[4];
           // Stay on connecting screen briefly so the boot bar can finish cleanly
-          // (menu advances from the render/tick path below)
+          if (menuMode !== "connecting" && menuMode !== "finding" && menuMode !== "waiting" && menuMode !== "in_game") {
+            menuMode = activePilot ? "main" : "account";
+          }
+          try { updateTouchUIVisibility(); } catch (e) {}
         };
 
         ws.onmessage = (event) => { 
@@ -2279,8 +2290,6 @@
     let oreRegenAccumulator = 0; const ORE_REGEN_INTERVAL = 4.0; const MAX_WORLD_ORES = 40;
     let outgoingLaserQueue = [];
     let pendingHits = []; // { target, dmg, stasis }
-    const recentKillCredit = new Map(); // playerId -> timestamp of last kill credit
-    const KILL_CREDIT_LOCK_MS = 10000; // match 10s respawn
     let nextOreId = 1;
     let outgoingCollectedOres = [];
     let outgoingAsteroidHits = []; // { id, dmg } — non-host reports damage to host
@@ -3473,29 +3482,72 @@
     const FIXED_STEP = 1 / 60; // physics is per-step, so run it at a fixed rate on every monitor
     let stepAccumulator = 0;
     let lastTime = performance.now();
+    let _loopErrors = 0;
     function gameLoop(now) {
       const dt = Math.min((now - lastTime) / 1000, 0.1); 
       lastTime = now;
       try { 
+        // Safety: never stay in a broken in-game state with no ship / no mode
+        if (!inLobby && menuMode !== "in_game") {
+          inLobby = true;
+          menuMode = activePilot ? "main" : (menuMode === "account" ? "account" : "connecting");
+          updateTouchUIVisibility();
+        }
         if (inLobby) {
           renderLobby(); 
         } else { 
-          stepAccumulator += dt;
-          let steps = 0;
-          while (stepAccumulator >= FIXED_STEP && steps < 5) {
-            updateGame(FIXED_STEP);
-            stepAccumulator -= FIXED_STEP;
-            steps++;
+          if (!myShip) {
+            try { initMyShip(); } catch (e) {}
           }
-          if (steps >= 5) stepAccumulator = 0; // too far behind, drop the backlog
-          renderGame(); 
-        } 
+          if (!myShip) {
+            // Cannot run match without a ship — bounce to hangar
+            inLobby = true;
+            menuMode = activePilot ? "main" : "account";
+            practiceMode = false;
+            updateTouchUIVisibility();
+            renderLobby();
+          } else {
+            stepAccumulator += dt;
+            let steps = 0;
+            while (stepAccumulator >= FIXED_STEP && steps < 5) {
+              updateGame(FIXED_STEP);
+              stepAccumulator -= FIXED_STEP;
+              steps++;
+            }
+            if (steps >= 5) stepAccumulator = 0;
+            renderGame(); 
+          }
+        }
+        _loopErrors = 0;
       } catch (err) { 
-        console.error("GameLoop safety rescue:", err); 
+        console.error("GameLoop safety rescue:", err);
+        _loopErrors++;
+        if (_loopErrors >= 3) {
+          try {
+            inLobby = true;
+            practiceMode = false;
+            menuMode = activePilot ? "main" : "account";
+            updateTouchUIVisibility();
+            renderLobby();
+          } catch (e2) {
+            // last resort: solid background + message
+            try {
+              vctx.fillStyle = "#0a0a19";
+              vctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+              vctx.fillStyle = "#0ff";
+              vctx.font = "bold 18px Consolas";
+              vctx.textAlign = "center";
+              vctx.fillText("RECOVERING… reload if this persists", V_WIDTH / 2, V_HEIGHT / 2);
+            } catch (e3) {}
+          }
+          _loopErrors = 0;
+        }
       }
       ctx.fillStyle = "#000000"; 
       ctx.fillRect(0, 0, canvas.width, canvas.height); 
-      ctx.drawImage(virtualCanvas, 0, 0, canvas.width, canvas.height);
+      if (canvas.width > 0 && canvas.height > 0) {
+        ctx.drawImage(virtualCanvas, 0, 0, canvas.width, canvas.height);
+      }
       requestAnimationFrame(gameLoop);
     }
     requestAnimationFrame(gameLoop);
