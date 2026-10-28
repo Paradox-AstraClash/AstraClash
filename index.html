@@ -209,7 +209,13 @@
     }
 
     function updateTouchUIVisibility() {
-      const showTouch = touchControlsEnabled && !inLobby && !matchOver;
+      // Touch pads only during a live match — never on home, sign-in, lobby, or results
+      const showTouch = !!(
+        touchControlsEnabled
+        && !inLobby
+        && !matchOver
+        && menuMode === "in_game"
+      );
       const dpad = document.getElementById("group-dpad");
       const act = document.getElementById("group-action");
       const upg = document.getElementById("group-upgrade");
@@ -217,6 +223,7 @@
       if (act) act.style.display = showTouch ? "flex" : "none";
       if (upg) upg.style.display = showTouch ? "flex" : "none";
     }
+    updateTouchUIVisibility();
 
     const V_WIDTH = 1000; const V_HEIGHT = 600;
     const canvas = document.getElementById("gameCanvas"); const ctx = canvas.getContext("2d");
@@ -1229,10 +1236,14 @@
     let lobbyMatchStarted = false;
     let lobbyAllowLateJoin = false;
     let lobbyHostId = 1;
+    let lobbyIsPublic = false;
     let cpuDifficulty = sessionStorage.getItem("astraclash_cpu_diff") || "normal"; // easy | normal | hard
     let lobbyCpuCount = 0; // CPUs to spawn when host starts
     let cpuShips = {}; // id -> ship state (host-simulated)
     let nextCpuId = 101;
+    let practiceMode = false; // local CPU match while Quick Play still searches
+    let quickPlaySearch = false; // finding / waiting for real public lobby
+    let lastPublicPollAt = 0;
 
     function pilotDisplayName() {
       if (activePilot) return (activePilot.display_name || activePilot.username || "PILOT").slice(0, 24);
@@ -1241,9 +1252,14 @@
     function isLobbyHost() {
       return Number(myId) === Number(lobbyHostId) || isHost();
     }
+    function isPrivateLobbyHost() {
+      return !lobbyIsPublic && isLobbyHost();
+    }
     function beginMatchFromLobby() {
+      practiceMode = false;
+      quickPlaySearch = false;
       lobbyMatchStarted = true;
-      if (isLobbyHost() && lobbyCpuCount > 0) spawnLobbyCpus(lobbyCpuCount);
+      if ((isLobbyHost() || isPrivateLobbyHost()) && lobbyCpuCount > 0) spawnLobbyCpus(lobbyCpuCount);
       setLobbyState(false);
       menuMode = "in_game";
       statusMessage = lobbyCpuCount > 0 ? `Match started · ${lobbyCpuCount} CPU (${cpuDifficulty})` : "Match started!";
@@ -1274,6 +1290,59 @@
       }
     }
     function clearCpus() { cpuShips = {}; }
+    function startPracticeVsCpu() {
+      // Local warm-up vs CPUs while Quick Play keeps searching for a real lobby
+      practiceMode = true;
+      quickPlaySearch = true;
+      lobbyMatchStarted = true;
+      lobbyCpuCount = Math.max(lobbyCpuCount, 2);
+      if (!myShip) initMyShip();
+      resetMatch();
+      if (!myShip) initMyShip();
+      applyArmedShopBoosts();
+      spawnLobbyCpus(Math.min(3, Math.max(1, lobbyCpuCount || 2)));
+      setLobbyState(false);
+      menuMode = "in_game";
+      matchOver = false;
+      statusMessage = "PRACTICE · searching for real lobby…";
+      statusColor = RAINBOW[3];
+      pushKillFeed("PRACTICE MODE — auto-joins when a lobby is found");
+      updateTouchUIVisibility();
+    }
+    function endPracticeToSearch() {
+      practiceMode = false;
+      lobbyMatchStarted = false;
+      matchOver = false;
+      matchResults = null;
+      clearCpus();
+      for (const k of Object.keys(remoteShips)) {
+        if (remoteShips[k] && remoteShips[k].is_cpu) delete remoteShips[k];
+      }
+      lasers = [];
+      setLobbyState(true);
+      menuMode = quickPlaySearch ? "finding" : "main";
+      statusMessage = quickPlaySearch ? "Still searching for Quick Play…" : "Practice ended.";
+      statusColor = CYAN;
+      updateTouchUIVisibility();
+      if (quickPlaySearch && isConnected) {
+        lastPublicPollAt = 0;
+        sendMsg({ action: "list_public" });
+      }
+    }
+    function leavePracticeForRealLobby() {
+      // Real match found — drop CPUs and let normal join / match_start take over
+      practiceMode = false;
+      clearCpus();
+      for (const k of Object.keys(remoteShips)) {
+        if (remoteShips[k] && remoteShips[k].is_cpu) delete remoteShips[k];
+      }
+      lasers = [];
+      matchOver = false;
+      matchResults = null;
+      statusMessage = "Real lobby found — joining…";
+      statusColor = CYAN;
+      pushKillFeed("REAL LOBBY FOUND");
+    }
     function updateCpuShips(dt) {
       if (!isHost() || !lobbyMatchStarted) return;
       const params = cpuDiffParams();
@@ -1431,6 +1500,7 @@
     function setLobbyState(val) {
       const wasLobby = inLobby;
       inLobby = val;
+      updateTouchUIVisibility();
       if (!val) {
         menuMode = "in_game";
         // Only reset the match when actually entering a game, never mid-match
@@ -1591,6 +1661,7 @@
 
       if (action === "match_start") {
         pendingJoin = false;
+        if (practiceMode) leavePracticeForRealLobby();
         beginMatchFromLobby();
       }
 
@@ -1638,10 +1709,11 @@
             statusMessage = "Joining lobby...";
             pendingJoin = true;
           } else {
-            sendMsg({ action: "create_room", public: true, password: null, name: pilotDisplayName(), allow_late_join: false });
+            sendMsg({ action: "create_room", public: true, password: null, name: pilotDisplayName(), allow_late_join: true });
             statusMessage = "Lobby created — waiting for an opponent...";
             lobbyMatchStarted = false;
             lobbyIsPublic = true;
+            quickPlaySearch = true;
             menuMode = "waiting";
           }
         }
@@ -1748,6 +1820,22 @@
                   }
                 }
               }
+              // If we just scored a kill on this pilot, ignore stale "still alive" packets briefly
+              let lockUntil = (prev && prev._deadLockUntil) || 0;
+              const creditT = recentKillCredit.get(Number(sId)) || 0;
+              if (creditT) lockUntil = Math.max(lockUntil, creditT + KILL_CREDIT_LOCK_MS);
+              if (lockUntil && performance.now() < lockUntil && (incomingAlive || mergedHp > 0)) {
+                // Only allow revive after lock if they clearly respawned with invuln-style full hull mid-lock
+                // Otherwise keep them dead so overlapping shots can't multi-kill
+                if (!(incomingAlive && incomingHp >= incomingMax && mergedHp >= incomingMax)) {
+                  incomingAlive = false;
+                  mergedHp = 0;
+                } else {
+                  // legitimate respawn — clear lock
+                  recentKillCredit.delete(Number(sId));
+                  lockUntil = 0;
+                }
+              }
               remoteShips[sId] = {
                 id: sId, 
                 world_x: wx, 
@@ -1765,7 +1853,8 @@
                 shield_charge: Number.isFinite(Number(s.shield_charge)) ? Number(s.shield_charge) : 0,
                 color: s.color || RAINBOW[Number(sId)] || RAINBOW[2],
                 name: boardName(s.name || `PILOT ${sId}`),
-                title: s.title || null
+                title: s.title || null,
+                _deadLockUntil: lockUntil || 0
               };
             }
           }
@@ -2014,6 +2103,7 @@
       matchWinnerName = "";
       resetMatchStats();
       if (myShip) myShip.kills = 0;
+      try { recentKillCredit.clear(); } catch (e) {}
       for (const pid in remoteShips) {
         if (remoteShips[pid]) remoteShips[pid].kills = 0;
       }
@@ -2104,7 +2194,13 @@
     }
 
     function leaveLobbyOrMatch() {
+      if (practiceMode) {
+        endPracticeToSearch();
+        return;
+      }
       // From waiting lobby or in-match: disconnect and return to hangar
+      practiceMode = false;
+      quickPlaySearch = false;
       matchOver = false;
       matchResults = null;
       lobbyRoster = [];
@@ -2183,6 +2279,8 @@
     let oreRegenAccumulator = 0; const ORE_REGEN_INTERVAL = 4.0; const MAX_WORLD_ORES = 40;
     let outgoingLaserQueue = [];
     let pendingHits = []; // { target, dmg, stasis }
+    const recentKillCredit = new Map(); // playerId -> timestamp of last kill credit
+    const KILL_CREDIT_LOCK_MS = 10000; // match 10s respawn
     let nextOreId = 1;
     let outgoingCollectedOres = [];
     let outgoingAsteroidHits = []; // { id, dmg } — non-host reports damage to host
@@ -2239,48 +2337,58 @@
         rp.alive = false;
         rp.hp = 0;
         if (creditKill && wasAlive && myShip) {
-          myShip.kills = (myShip.kills || 0) + 1;
-          matchStats.kills = myShip.kills;
-          recordAccountStat("kills", 1);
-          trackContract("kills", 1);
-          // Earned color blueprint drop (5% per kill)
-          const killBp = tryEarnColorBlueprint(COLOR_BP_DROP_KILL);
-          if (killBp) { matchEarnedBPs.push(killBp); pushKillFeed(killBp); }
-          // Coins: 10 per victim level (tier). Min 10 if they had any XP path.
-          const vTier = Number.isFinite(Number(rp.tier)) ? Number(rp.tier) : tierFromXp(rp.xp);
-          const coinGain = 10 * Math.max(1, vTier || 0);
-          // If tier 0, still give 10 for a kill
-          const coinsAwarded = vTier <= 0 ? 10 : coinGain;
-          if (activePilot) {
-            addCoinsDelta(coinsAwarded).then(({ error }) => {
-              if (!error) {
-                spawnFloatText(rp.world_x, rp.world_y - 36, `+${coinsAwarded} COINS`, ORE_GOLD);
-                refreshCoins();
-              } else {
-                console.warn("kill coins failed", error);
-                spawnFloatText(rp.world_x, rp.world_y - 36, "COIN ERROR", RAINBOW[1]);
+          const now = performance.now();
+          const lastCredit = recentKillCredit.get(id) || 0;
+          // 10s gap matches respawn — cannot farm the same pilot twice in one life cycle
+          if (now - lastCredit < KILL_CREDIT_LOCK_MS) {
+            // already credited this death / still in respawn window
+          } else {
+            recentKillCredit.set(id, now);
+            rp._deadLockUntil = now + KILL_CREDIT_LOCK_MS;
+            const isCpu = !!(rp.is_cpu || cpuShips[id]);
+            myShip.kills = (myShip.kills || 0) + 1;
+            matchStats.kills = myShip.kills;
+            if (!isCpu) {
+              recordAccountStat("kills", 1);
+              trackContract("kills", 1);
+              const killBp = tryEarnColorBlueprint(COLOR_BP_DROP_KILL);
+              if (killBp) { matchEarnedBPs.push(killBp); pushKillFeed(killBp); }
+              // Coins only for real pilots — never for CPUs
+              const vTier = Number.isFinite(Number(rp.tier)) ? Number(rp.tier) : tierFromXp(rp.xp);
+              const coinGain = 10 * Math.max(1, vTier || 0);
+              const coinsAwarded = vTier <= 0 ? 10 : coinGain;
+              if (activePilot) {
+                addCoinsDelta(coinsAwarded).then(({ error }) => {
+                  if (!error) {
+                    spawnFloatText(rp.world_x, rp.world_y - 36, `+${coinsAwarded} COINS`, ORE_GOLD);
+                    refreshCoins();
+                  } else {
+                    console.warn("kill coins failed", error);
+                  }
+                }).catch((e) => console.warn(e));
               }
-            }).catch((e) => console.warn(e));
+              const stolenXp = Math.floor((Number(rp.xp) || 0) * 0.5);
+              if (stolenXp > 0) {
+                myShip.xp = (myShip.xp || 0) + stolenXp;
+                spawnFloatText(rp.world_x, rp.world_y - 52, `+${stolenXp} XP`, XP_BLUE);
+                recordAccountStat("career_xp", stolenXp);
+              }
+              if (shopData && shopData._killStreakLeft > 0 && stolenXp > 0) {
+                const bonus = Math.floor(stolenXp * 0.5);
+                myShip.xp += bonus;
+                shopData._killStreakLeft -= 1;
+                if (bonus > 0) spawnFloatText(rp.world_x, rp.world_y - 68, `STREAK +${bonus} XP`, RAINBOW[3]);
+              }
+            } else {
+              // CPU kill: board kill only, no coins / contracts / career stats
+              spawnFloatText(rp.world_x, rp.world_y - 36, "CPU", GRAY);
+            }
+            let badge = "";
+            if (shopData && shopData.inv && shopData.inv.killBadge) badge += " ◆";
+            if (shopData && shopData.inv && shopData.inv.shipStockpile) badge += " ■";
+            pushKillFeed((isCpu ? "CPU DESTROYED" : "YOU DESTROYED A RIVAL") + badge);
+            spawnFloatText(rp.world_x, rp.world_y - 20, "KILL", "rgb(255, 80, 80)");
           }
-          // Steal half the XP they had collected
-          const stolenXp = Math.floor((Number(rp.xp) || 0) * 0.5);
-          if (stolenXp > 0) {
-            myShip.xp = (myShip.xp || 0) + stolenXp;
-            spawnFloatText(rp.world_x, rp.world_y - 52, `+${stolenXp} XP`, XP_BLUE);
-            recordAccountStat("career_xp", stolenXp);
-          }
-          // Kill streak charm: first 3 kills give +50% of stolen XP extra
-          if (shopData && shopData._killStreakLeft > 0 && stolenXp > 0) {
-            const bonus = Math.floor(stolenXp * 0.5);
-            myShip.xp += bonus;
-            shopData._killStreakLeft -= 1;
-            if (bonus > 0) spawnFloatText(rp.world_x, rp.world_y - 68, `STREAK +${bonus} XP`, RAINBOW[3]);
-          }
-          let badge = "";
-          if (shopData && shopData.inv && shopData.inv.killBadge) badge += " ◆";
-          if (shopData && shopData.inv && shopData.inv.shipStockpile) badge += " ■";
-          pushKillFeed(`YOU DESTROYED A RIVAL` + badge);
-          spawnFloatText(rp.world_x, rp.world_y - 20, "KILL", "rgb(255, 80, 80)");
         }
       }
       if (stasisTime) rp.stasis = true;
@@ -2290,6 +2398,13 @@
       const id = Number(targetId);
       if (!Number.isFinite(id) || id === myId) return;
       if (sameTeam(myId, id)) return; // friendly fire off in team modes
+      const rp = remoteShips[id];
+      if (rp && (rp.alive === false || (Number.isFinite(rp.hp) && rp.hp <= 0))) {
+        // already dead — don't spam hits / kill credits
+        return;
+      }
+      const lastCredit = recentKillCredit.get(id) || 0;
+      if (lastCredit && performance.now() - lastCredit < KILL_CREDIT_LOCK_MS) return;
       const amount = Number(dmg) || 1;
       const st = stasisTime ? Number(stasisTime) : 0;
       pendingHits.push({ target: id, dmg: amount, stasis: st > 0 ? st : undefined });
@@ -2620,10 +2735,13 @@
             if (!isConnected) connectWs();
             applyMatchConfig({ mode: "ffa", useTimer: true, useKills: true, durationSec: 8 * 60, killLimit: 10 });
             lobbyIsPublic = true;
-            lobbyCpuCount = 0;
+            lobbyCpuCount = 2;
+            quickPlaySearch = true;
+            practiceMode = false;
             menuMode = "finding";
             statusMessage = "Finding lobbies...";
             statusColor = RAINBOW[3];
+            lastPublicPollAt = 0;
             sendMsg({ action: "list_public" });
           }
           // Private Matches hub
@@ -2640,9 +2758,22 @@
           }
         }
       } else if (menuMode === "finding") {
+        const diffs = ["easy", "normal", "hard"];
+        for (let di = 0; di < 3; di++) {
+          const dx = cx - 200 + di * 135;
+          if (pos.x >= dx && pos.x <= dx + 120 && pos.y >= 235 && pos.y <= 269) {
+            cpuDifficulty = diffs[di];
+            sessionStorage.setItem("astraclash_cpu_diff", cpuDifficulty);
+          }
+        }
+        if (pos.x >= cx - 120 && pos.x <= cx + 120 && pos.y >= 285 && pos.y <= 327) {
+          startPracticeVsCpu();
+        }
         // Cancel search
-        if (pos.x >= cx - 90 && pos.x <= cx + 90 && pos.y >= 430 && pos.y <= 470) {
+        if (pos.x >= cx - 90 && pos.x <= cx + 90 && pos.y >= 420 && pos.y <= 460) {
           pendingJoin = false;
+          quickPlaySearch = false;
+          practiceMode = false;
           menuMode = "main";
           statusMessage = "Search cancelled.";
           statusColor = GRAY;
@@ -2967,6 +3098,21 @@
         // Leave lobby (top-right)
         if (pos.x >= V_WIDTH - 120 && pos.x <= V_WIDTH - 16 && pos.y >= 12 && pos.y <= 44) {
           leaveLobbyOrMatch();
+        }
+        // Public: practice vs CPU while waiting
+        if (lobbyIsPublic) {
+          quickPlaySearch = true;
+          const diffs = ["easy", "normal", "hard"];
+          for (let di = 0; di < 3; di++) {
+            const dx = cx - 180 + di * 120;
+            if (pos.x >= dx && pos.x <= dx + 105 && pos.y >= 390 && pos.y <= 418) {
+              cpuDifficulty = diffs[di];
+              sessionStorage.setItem("astraclash_cpu_diff", cpuDifficulty);
+            }
+          }
+          if (pos.x >= cx - 100 && pos.x <= cx + 100 && pos.y >= 430 && pos.y <= 464) {
+            startPracticeVsCpu();
+          }
         }
         const host = isPrivateLobbyHost();
         const roster = lobbyRoster.length ? lobbyRoster : [{ id: myId, name: pilotDisplayName() }];
@@ -3452,12 +3598,12 @@
 
           vctx.font = "bold 15px Consolas";
           vctx.fillStyle = WHITE;
-          vctx.fillText(isConnected ? "CONNECTED" : "BOOTING UP SERVERS", cx, 345);
+          vctx.fillText("BOOTING UP SERVERS", cx, 345);
 
           const dots = ".".repeat(Math.floor(spinTime * 2) % 4);
           vctx.font = "12px Consolas";
           vctx.fillStyle = GRAY;
-          vctx.fillText(isConnected ? ("Entering hangar" + dots) : ("This may take a few moments" + dots), cx, 368);
+          vctx.fillText("This may take a few moments" + dots, cx, 368);
           vctx.fillStyle = "rgba(0, 255, 255, 0.7)";
           vctx.fillText(`Elapsed ${Math.floor(spinTime)}s`, cx, 390);
 
@@ -3576,37 +3722,48 @@
         vctx.fillText("Same account as Paradox · username + password (no email needed)", cx, actY + 55);
 
       } else if (menuMode === "finding") {
-        drawCard(vctx, cx - 240, 120, 480, 340, CYAN);
+        drawCard(vctx, cx - 240, 90, 480, 400, CYAN);
         vctx.textAlign = "center";
-        vctx.font = "bold 26px Consolas";
+        vctx.font = "bold 24px Consolas";
         vctx.fillStyle = CYAN;
-        vctx.fillText("FINDING LOBBIES", cx, 180);
+        vctx.fillText("WAITING FOR PLAYERS", cx, 130);
         const dots = ".".repeat(Math.floor((performance.now() / 400) % 4));
         vctx.font = "14px Consolas";
         vctx.fillStyle = WHITE;
-        vctx.fillText("Searching public arenas" + dots, cx, 220);
+        vctx.fillText("Searching Quick Play lobbies" + dots, cx, 160);
         vctx.font = "12px Consolas";
         vctx.fillStyle = GRAY;
-        vctx.fillText(statusMessage || "Quick Play matchmaking", cx, 250);
-        // rotating tips
+        vctx.fillText(statusMessage || "Quick Play matchmaking", cx, 185);
+        // CPU practice while you wait
+        vctx.font = "bold 12px Consolas"; vctx.fillStyle = ORE_GOLD;
+        vctx.fillText("WARM UP VS CPU — auto-joins a real lobby when found", cx, 220);
+        const diffs = [["easy", "EASY"], ["normal", "MEDIUM"], ["hard", "HARD"]];
+        for (let di = 0; di < 3; di++) {
+          const dx = cx - 200 + di * 135;
+          const on = cpuDifficulty === diffs[di][0];
+          drawCard(vctx, dx, 235, 120, 34, on ? CYAN : DARK_GRAY);
+          vctx.font = "bold 12px Consolas"; vctx.fillStyle = on ? CYAN : WHITE;
+          vctx.fillText(diffs[di][1], dx + 60, 257);
+        }
+        drawCard(vctx, cx - 120, 285, 240, 42, RAINBOW[4]);
+        vctx.font = "bold 14px Consolas"; vctx.fillStyle = RAINBOW[4];
+        vctx.fillText("PLAY VS CPU", cx, 311);
         const tipIdx = Math.floor(performance.now() / 5000) % BOOT_TIPS.length;
         const tip = BOOT_TIPS[tipIdx];
         vctx.font = "11px Consolas";
         vctx.fillStyle = RAINBOW[3];
-        vctx.fillText("TIP", cx, 300);
+        vctx.fillText("TIP", cx, 360);
         vctx.fillStyle = WHITE;
         if (tip.length > 58) {
           const cut = tip.lastIndexOf(" ", 58);
-          vctx.fillText(tip.slice(0, cut > 0 ? cut : 58), cx, 322);
-          vctx.fillText(tip.slice(cut > 0 ? cut + 1 : 58), cx, 340);
+          vctx.fillText(tip.slice(0, cut > 0 ? cut : 58), cx, 380);
+          vctx.fillText(tip.slice(cut > 0 ? cut + 1 : 58), cx, 396);
         } else {
-          vctx.fillText(tip, cx, 322);
+          vctx.fillText(tip, cx, 380);
         }
-        const pulse = Math.floor((performance.now() / 50) % 10);
-        vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 380, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
-        drawCard(vctx, cx - 90, 430, 180, 40, WHITE);
+        drawCard(vctx, cx - 90, 420, 180, 40, WHITE);
         vctx.font = "bold 14px Consolas"; vctx.fillStyle = WHITE;
-        vctx.fillText("CANCEL", cx, 455);
+        vctx.fillText("CANCEL", cx, 445);
       } else if (menuMode === "waiting") {
         const host = isPrivateLobbyHost();
         drawCard(vctx, V_WIDTH - 120, 12, 104, 32, RAINBOW[1]);
@@ -3662,12 +3819,25 @@
           vctx.font = "bold 14px Consolas"; vctx.fillStyle = CYAN;
           vctx.fillText("START MATCH", cx, 480);
         } else if (lobbyIsPublic) {
-          vctx.font = "13px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
-          vctx.fillText("Match starts automatically when 2+ pilots join", cx, 400);
-          vctx.font = "12px Consolas"; vctx.fillStyle = GRAY;
-          vctx.fillText("No host controls in Quick Play · use Private for CPUs", cx, 430);
-          const pulse = Math.floor((performance.now() / 50) % 10);
-          vctx.strokeStyle = CYAN; vctx.beginPath(); vctx.arc(cx, 470, 6 + pulse, 0, Math.PI * 2); vctx.stroke();
+          vctx.font = "bold 14px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
+          vctx.fillText("WAITING FOR PLAYERS", cx, 355);
+          vctx.font = "11px Consolas"; vctx.fillStyle = GRAY;
+          vctx.fillText("Match starts at 2+ pilots · warm up vs CPU while you wait", cx, 375);
+          const diffs = [["easy", "EASY"], ["normal", "MED"], ["hard", "HARD"]];
+          for (let di = 0; di < 3; di++) {
+            const dx = cx - 180 + di * 120;
+            const on = cpuDifficulty === diffs[di][0];
+            drawCard(vctx, dx, 390, 105, 28, on ? CYAN : DARK_GRAY);
+            vctx.font = "bold 11px Consolas"; vctx.fillStyle = on ? CYAN : WHITE;
+            vctx.fillText(diffs[di][1], dx + 52, 409);
+          }
+          drawCard(vctx, cx - 100, 430, 200, 34, RAINBOW[4]);
+          vctx.font = "bold 12px Consolas"; vctx.fillStyle = RAINBOW[4];
+          vctx.fillText("PLAY VS CPU", cx, 452);
+          const tipIdx = Math.floor(performance.now() / 5000) % BOOT_TIPS.length;
+          const tip = BOOT_TIPS[tipIdx];
+          vctx.font = "10px Consolas"; vctx.fillStyle = RAINBOW[3];
+          vctx.fillText("TIP  ·  " + (tip.length > 48 ? tip.slice(0, 48) + "…" : tip), cx, 490);
         } else {
           vctx.font = "12px Consolas"; vctx.fillStyle = RAINBOW[3]; vctx.textAlign = "center";
           vctx.fillText("Waiting for host to start the match…", cx, 430);
@@ -4239,6 +4409,14 @@
         return;
       }
 
+      // Keep scanning for real Quick Play lobbies while searching or practicing
+      if (quickPlaySearch && isConnected && (practiceMode || menuMode === "finding" || (menuMode === "waiting" && lobbyIsPublic))) {
+        const now = performance.now();
+        if (now - lastPublicPollAt > 4000) {
+          lastPublicPollAt = now;
+          sendMsg({ action: "list_public" });
+        }
+      }
       if (!inLobby && isHost()) {
         updateCpuShips(dt);
         for (const id of Object.keys(cpuShips)) {
@@ -4401,9 +4579,7 @@
           // Hold-to-fire only with Gatling Laser; otherwise one shot per press
           const wantFire = myShip.hold_fire ? fireHeld : fireTap;
           if (wantFire && myShip.cooldown <= 0 && myShip.stasis_timer <= 0 && !myShip.is_charging_shield) {
-            if (myShip.is_missile && (myShip.mana || 0) < 5) {
-              // not enough mana for a missile
-            } else {
+            // Missiles cost mana inside emitShot; if mana is empty, emitShot falls back to normal lasers
             const rad = (myShip.angle * Math.PI) / 180;
             let fired = false;
             if (myShip.flak_mode) { for (let i = -3; i <= 3; i++) { if (emitShot((myShip.angle + i * 8 + 360) % 360, SHIP_SIZE, 0, 0.35)) fired = true; } } 
@@ -4412,9 +4588,8 @@
               if (myShip.spread_shot) { if (emitShot((myShip.angle + 15) % 360, SHIP_SIZE, 0)) fired = true; if (emitShot((myShip.angle - 15) % 360, SHIP_SIZE, 0)) fired = true; }
               if (myShip.rear_cannon) { if (emitShot((myShip.angle + 180) % 360, SHIP_SIZE * 0.7, 0)) fired = true; }
             }
-            if (fired || !myShip.is_missile) {
+            if (fired) {
               myShip.cooldown = myShip.cooldown_max; myShip.world_x -= 0.6 * Math.cos(rad); myShip.world_y += 0.6 * Math.sin(rad);
-            }
             }
           }
         }
@@ -5101,6 +5276,12 @@
       drawCard(vctx, V_WIDTH - 88, 12, 76, 24, RAINBOW[1]);
       vctx.font = "bold 11px Consolas"; vctx.fillStyle = RAINBOW[1]; vctx.textAlign = "center";
       vctx.fillText("LEAVE", V_WIDTH - 50, 28);
+      if (practiceMode) {
+        vctx.font = "bold 10px Consolas";
+        vctx.fillStyle = ORE_GOLD;
+        vctx.textAlign = "center";
+        vctx.fillText("PRACTICE · auto-join when lobby found", V_WIDTH / 2, 48);
+      }
       const atMaxTier = myShip.tier >= TIER_XP_THRESHOLDS.length - 1;
       vctx.fillStyle = XP_BG; vctx.fillRect(bm, by, bw, bh);
       if (atMaxTier) {
